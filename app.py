@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -50,16 +51,25 @@ def baixar_serie_bcb(codigo: int, ano_inicial: int) -> pd.DataFrame:
     url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{codigo}/dados"
 
     for ano in range(ano_inicial, date.today().year + 1):
-        resposta = requests.get(
-            url,
-            params={
-                "formato": "json",
-                "dataInicial": f"01/01/{ano}",
-                "dataFinal": f"31/12/{ano}",
-            },
-            timeout=30,
-        )
-        resposta.raise_for_status()
+        for tentativa in range(5):
+            try:
+                resposta = requests.get(
+                    url,
+                    params={
+                        "formato": "json",
+                        "dataInicial": f"01/01/{ano}",
+                        "dataFinal": f"31/12/{ano}",
+                    },
+                    headers={"User-Agent": "Radar-de-Retorno/1.0"},
+                    timeout=30,
+                )
+                resposta.raise_for_status()
+                break
+            except requests.RequestException:
+                if tentativa == 4:
+                    raise
+                time.sleep(2 ** tentativa)
+
         parte = pd.DataFrame(resposta.json())
         if not parte.empty:
             partes.append(parte)
