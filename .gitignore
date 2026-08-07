@@ -1,0 +1,6 @@
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+presentation_runtime/__pycache__/
+presentation_runtime/node_modules/
+presentation_runtime/qa_temp/
