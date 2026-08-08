@@ -1105,6 +1105,144 @@ def calcular_metricas_risco_fundos(
     return pd.DataFrame(linhas)
 
 
+def criar_grafico_volatilidade_fundos(
+    series: dict[str, pd.Series],
+    dias_janela: int,
+):
+    cores = ["#1769e0", "#19c2d8", "#ff6b4a", "#7656d6", "#0f9d78", "#e2a126", "#64748b"]
+    fig = go.Figure()
+    for (nome, serie), cor in zip(series.items(), cores):
+        retornos = serie.dropna().sort_index().pct_change()
+        volatilidade = retornos.rolling(
+            dias_janela,
+            min_periods=max(10, dias_janela // 2),
+        ).std() * (252 ** 0.5) * 100
+        volatilidade = volatilidade.dropna()
+        fig.add_trace(
+            go.Scatter(
+                x=volatilidade.index,
+                y=volatilidade.values,
+                mode="lines",
+                name=nome,
+                line={"width": 2.2, "color": cor},
+                hovertemplate="%{x|%d/%m/%Y}<br>Volatilidade: %{y:.2f}% a.a.<extra></extra>",
+            )
+        )
+    fig.update_layout(
+        title=f"Volatilidade móvel · {dias_janela} dias úteis",
+        height=430,
+        margin={"l": 25, "r": 20, "t": 65, "b": 85},
+        hovermode="x unified",
+        dragmode=False,
+        legend={"orientation": "h", "y": -0.18, "x": 0.5, "xanchor": "center"},
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    fig.update_xaxes(showgrid=False, fixedrange=True)
+    fig.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0", fixedrange=True)
+    return fig
+
+
+def criar_grafico_drawdown_fundos(series: dict[str, pd.Series]):
+    cores = ["#1769e0", "#19c2d8", "#ff6b4a", "#7656d6", "#0f9d78", "#e2a126", "#64748b"]
+    preenchimentos = [
+        "rgba(23,105,224,0.10)",
+        "rgba(25,194,216,0.10)",
+        "rgba(255,107,74,0.10)",
+        "rgba(118,86,214,0.10)",
+        "rgba(15,157,120,0.10)",
+        "rgba(226,161,38,0.10)",
+        "rgba(100,116,139,0.10)",
+    ]
+    fig = go.Figure()
+    for (nome, serie), cor, preenchimento in zip(series.items(), cores, preenchimentos):
+        serie = serie.dropna().sort_index()
+        drawdown = (serie / serie.cummax() - 1) * 100
+        fig.add_trace(
+            go.Scatter(
+                x=drawdown.index,
+                y=drawdown.values,
+                mode="lines",
+                name=nome,
+                fill="tozeroy",
+                fillcolor=preenchimento,
+                line={"width": 1.9, "color": cor},
+                hovertemplate="%{x|%d/%m/%Y}<br>Queda: %{y:.2f}%<extra></extra>",
+            )
+        )
+    fig.update_layout(
+        title="Quedas em relação ao maior valor anterior · drawdown",
+        height=430,
+        margin={"l": 25, "r": 20, "t": 65, "b": 85},
+        hovermode="x unified",
+        dragmode=False,
+        legend={"orientation": "h", "y": -0.18, "x": 0.5, "xanchor": "center"},
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    fig.update_xaxes(showgrid=False, fixedrange=True)
+    fig.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0", fixedrange=True)
+    return fig
+
+
+def calcular_frequencia_vitorias_janelas(
+    dados_janelas: dict[str, pd.Series],
+    principal: str,
+):
+    linhas = []
+    serie_principal = dados_janelas.get(principal, pd.Series(dtype=float))
+    for comparativo, serie_comparativa in dados_janelas.items():
+        if comparativo == principal:
+            continue
+        alinhadas = pd.concat(
+            [serie_principal.rename("principal"), serie_comparativa.rename("comparativo")],
+            axis=1,
+            join="inner",
+        ).dropna()
+        if alinhadas.empty:
+            continue
+        diferenca = alinhadas["principal"] - alinhadas["comparativo"]
+        vitorias = int((diferenca > 1e-10).sum())
+        empates = int((diferenca.abs() <= 1e-10).sum())
+        derrotas = len(alinhadas) - vitorias - empates
+        linhas.append(
+            {
+                "Comparativo": comparativo,
+                "Vitórias": vitorias,
+                "Empates": empates,
+                "Derrotas": derrotas,
+                "Janelas comparadas": len(alinhadas),
+                "Frequência de vitória": vitorias / len(alinhadas),
+            }
+        )
+    return pd.DataFrame(linhas)
+
+
+def criar_grafico_frequencia_vitorias(tabela: pd.DataFrame, principal: str):
+    fig = go.Figure(
+        go.Bar(
+            x=tabela["Frequência de vitória"] * 100,
+            y=tabela["Comparativo"],
+            orientation="h",
+            marker_color="#1769e0",
+            text=[f"{valor:.1%}" for valor in tabela["Frequência de vitória"]],
+            textposition="inside",
+            hovertemplate="%{y}<br>Vitórias: %{x:.1f}%<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=f"Frequência histórica de vitória · {principal}",
+        height=max(240, 90 + 54 * len(tabela)),
+        margin={"l": 25, "r": 25, "t": 65, "b": 35},
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        showlegend=False,
+    )
+    fig.update_xaxes(range=[0, 100], ticksuffix="%", gridcolor="#e2e8f0", fixedrange=True)
+    fig.update_yaxes(fixedrange=True)
+    return fig
+
+
 def criar_grafico_evolucao_fundos(series: dict[str, pd.Series]):
     cores = ["#1769e0", "#19c2d8", "#ff6b4a", "#7656d6", "#0f9d78", "#e2a126", "#64748b"]
     fig = go.Figure()
@@ -1756,8 +1894,42 @@ def renderizar_analise_completa_fundos(cadastro, cnpjs, benchmarks, anos):
             "Volatilidade e Sharpe anualizados com 252 dias úteis. O Sharpe considera "
             "o excesso de retorno diário sobre o CDI; maior queda é o drawdown máximo."
         )
+        st.markdown("#### Risco ao longo do tempo")
+        opcoes_volatilidade = {
+            "21 dias úteis": 21,
+            "63 dias úteis": 63,
+            "126 dias úteis": 126,
+            "252 dias úteis": 252,
+        }
+        periodo_volatilidade = st.selectbox(
+            "Janela da volatilidade móvel",
+            list(opcoes_volatilidade),
+            index=1,
+            key=f"volatilidade_fundos_{'_'.join(cnpjs)}",
+        )
+        aba_volatilidade, aba_drawdown = st.tabs(["Volatilidade móvel", "Drawdown"])
+        with aba_volatilidade:
+            st.plotly_chart(
+                criar_grafico_volatilidade_fundos(
+                    series_exibidas,
+                    opcoes_volatilidade[periodo_volatilidade],
+                ),
+                width="stretch",
+                config={"displayModeBar": False, "displaylogo": False},
+            )
+        with aba_drawdown:
+            st.plotly_chart(
+                criar_grafico_drawdown_fundos(series_exibidas),
+                width="stretch",
+                config={"displayModeBar": False, "displaylogo": False},
+            )
 
     with st.expander("Janelas móveis", expanded=False):
+        st.caption(
+            f"Intervalo histórico usado: {data_inicial:%d/%m/%Y} a {data_final:%d/%m/%Y} "
+            f"({anos} {'ano' if anos == 1 else 'anos'} selecionados no topo). "
+            "Cada ponto representa uma entrada no fechamento de um mês."
+        )
         opcoes_janela = {
             "6 meses": 6,
             "12 meses": 12,
@@ -1806,6 +1978,37 @@ def renderizar_analise_completa_fundos(cadastro, cnpjs, benchmarks, anos):
                     "Melhor janela": st.column_config.NumberColumn(format="percent"),
                 },
             )
+            principal = nomes_fundos[0]
+            frequencia = calcular_frequencia_vitorias_janelas(janelas, principal)
+            if frequencia.empty:
+                st.info(
+                    "Adicione ao menos um benchmark ou outro fundo para calcular "
+                    "a frequência histórica de vitória."
+                )
+            else:
+                st.markdown("#### Quantas vezes o fundo principal venceu?")
+                st.caption(
+                    f"Série principal: {principal}. As janelas são mensais e sobrepostas, "
+                    "como na análise de índices."
+                )
+                if frequencia["Janelas comparadas"].min() < 12:
+                    st.warning(
+                        "A amostra possui menos de 12 janelas comparáveis. Percentuais "
+                        "calculados com poucas observações devem ser interpretados com cautela."
+                    )
+                st.plotly_chart(
+                    criar_grafico_frequencia_vitorias(frequencia, principal),
+                    width="stretch",
+                    config={"displayModeBar": False, "displaylogo": False},
+                )
+                st.dataframe(
+                    frequencia,
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "Frequência de vitória": st.column_config.NumberColumn(format="percent"),
+                    },
+                )
 
 
 def pagina_fundos():
