@@ -1836,7 +1836,31 @@ def renderizar_analise_completa_fundos(cadastro, cnpjs, benchmarks, anos):
         "Montando o histórico. No primeiro acesso, a consulta de vários anos pode levar alguns minutos..."
     ):
         extrato = carregar_extrato_fundos_cvm(tuple(cnpjs))
-        historico = carregar_historico_fundos_cvm(tuple(cnpjs), anos)
+        try:
+            historico = carregar_historico_fundos_cvm(tuple(cnpjs), anos)
+        except RuntimeError as erro:
+            if "não retornou histórico" not in str(erro).lower():
+                raise
+            historico_vazio = pd.DataFrame(
+                columns=[
+                    "cnpj",
+                    "data",
+                    "cota",
+                    "patrimonio",
+                    "captacao_dia",
+                    "resgate_dia",
+                    "cotistas",
+                ]
+            )
+            renderizar_fichas_fundos(cadastro, cnpjs, extrato, historico_vazio)
+            st.warning(
+                "A base pública de Informe Diário da CVM não disponibilizou cotas "
+                f"para este fundo nos últimos {anos} "
+                f"{'ano' if anos == 1 else 'anos'}. Isso não significa que o fundo "
+                "não possua histórico em outras bases. Tente ampliar o período; sem "
+                "cotas públicas no intervalo, os gráficos não podem ser calculados."
+            )
+            return
         benchmarks_internos = list(dict.fromkeys([*benchmarks, "CDI"]))
         series_completas = obter_series_analise_fundos(
             historico, cadastro, tuple(cnpjs), benchmarks_internos
@@ -1852,7 +1876,29 @@ def renderizar_analise_completa_fundos(cadastro, cnpjs, benchmarks, anos):
         st.warning("Não há histórico comum suficiente para a seleção realizada.")
         return
 
+    fundos_com_serie_interrompida = []
+    limite_recencia = pd.Timestamp(date.today()) - pd.Timedelta(days=45)
+    for cnpj in cnpjs:
+        dados_fundo = historico[historico["cnpj"].eq(cnpj)].dropna(subset=["data"])
+        if dados_fundo.empty:
+            continue
+        ultima_data = pd.Timestamp(dados_fundo["data"].max())
+        if ultima_data < limite_recencia:
+            nome = cadastro.loc[cadastro["cnpj"].eq(cnpj), "nome"].iloc[0]
+            fundos_com_serie_interrompida.append((nome, ultima_data))
+
     renderizar_fichas_fundos(cadastro, cnpjs, extrato, historico)
+    if fundos_com_serie_interrompida:
+        detalhes_interrupcao = "; ".join(
+            f"{nome}: último registro em {ultima_data:%d/%m/%Y}"
+            for nome, ultima_data in fundos_com_serie_interrompida
+        )
+        st.warning(
+            "A base pública de Informe Diário da CVM não possui cotas recentes para "
+            f"a seguinte seleção: {detalhes_interrupcao}. O fundo pode continuar ativo "
+            "e possuir histórico em outras bases. Os cálculos abaixo consideram somente "
+            "o trecho efetivamente disponibilizado pela CVM."
+        )
 
     with st.expander("Rentabilidade", expanded=True):
         st.plotly_chart(
