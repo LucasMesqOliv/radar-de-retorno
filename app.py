@@ -444,6 +444,10 @@ URL_INFORME_DIARIO_CVM = (
     "https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/"
     "inf_diario_fi_{mes}.zip"
 )
+URL_INFORME_HISTORICO_CVM = (
+    "https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/HIST/"
+    "inf_diario_fi_{ano}.zip"
+)
 URL_EXTRATO_FUNDOS_CVM = (
     "https://dados.cvm.gov.br/dados/FI/DOC/EXTRATO/DADOS/extrato_fi.csv"
 )
@@ -536,6 +540,7 @@ def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
                 usecols=[
                     "ID_Registro_Fundo",
                     "CNPJ_Classe",
+                    "Data_Constituicao",
                     "Denominacao_Social",
                     "Situacao",
                     "Tipo_Classe",
@@ -556,6 +561,7 @@ def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
                 usecols=[
                     "ID_Registro_Fundo",
                     "CNPJ_Fundo",
+                    "Data_Constituicao",
                     "Denominacao_Social",
                     "Situacao",
                     "Tipo_Fundo",
@@ -573,6 +579,7 @@ def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
     classes = classes.rename(
         columns={
             "CNPJ_Classe": "cnpj",
+            "Data_Constituicao": "data_constituicao",
             "Denominacao_Social": "nome",
             "Situacao": "situacao",
             "Tipo_Classe": "tipo",
@@ -594,6 +601,7 @@ def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
     fundos_adicionais = fundos_adicionais.rename(
         columns={
             "CNPJ_Fundo": "cnpj",
+            "Data_Constituicao": "data_constituicao",
             "Denominacao_Social": "nome",
             "Situacao": "situacao",
             "Tipo_Fundo": "tipo",
@@ -614,6 +622,7 @@ def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
     colunas = [
         "cnpj",
         "nome",
+        "data_constituicao",
         "situacao",
         "tipo",
         "classificacao",
@@ -637,6 +646,9 @@ def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
     cadastro["nome"] = cadastro["nome"].fillna("Fundo sem denominação")
     cadastro["patrimonio_cadastral"] = pd.to_numeric(
         cadastro["patrimonio_cadastral"], errors="coerce"
+    )
+    cadastro["data_constituicao"] = pd.to_datetime(
+        cadastro["data_constituicao"], errors="coerce"
     )
     cadastro["em_funcionamento"] = cadastro["situacao"].fillna("").str.contains(
         "Funcionamento Normal", case=False
@@ -674,6 +686,15 @@ def buscar_fundos_cvm(
 
 @st.cache_data(ttl=86_400, show_spinner=False)
 def carregar_informe_mes_cvm(mes: str, cnpjs: tuple[str, ...]) -> pd.DataFrame:
+    colunas_saida = [
+        "cnpj",
+        "data",
+        "cota",
+        "patrimonio",
+        "captacao_dia",
+        "resgate_dia",
+        "cotistas",
+    ]
     nome_zip = f"inf_diario_fi_{mes}.zip"
     periodo_arquivo = pd.Period(mes, freq="M")
     idade_meses = pd.Period(date.today(), freq="M").ordinal - periodo_arquivo.ordinal
@@ -683,6 +704,25 @@ def carregar_informe_mes_cvm(mes: str, cnpjs: tuple[str, ...]) -> pd.DataFrame:
         validade = 604_800
     else:
         validade = 31_536_000
+
+    pasta_series = Path(tempfile.gettempdir()) / "radar_retorno_cvm" / "series_fundos"
+    pasta_series.mkdir(parents=True, exist_ok=True)
+    arquivos_series = {
+        cnpj: pasta_series / f"{cnpj}_{mes}.pkl"
+        for cnpj in cnpjs
+    }
+    faltantes = []
+    for cnpj, arquivo_serie in arquivos_series.items():
+        cache_valido = arquivo_serie.exists()
+        if cache_valido and idade_meses <= 1:
+            cache_valido = time.time() - arquivo_serie.stat().st_mtime < validade
+        if not cache_valido:
+            faltantes.append(cnpj)
+
+    if not faltantes:
+        partes_cache = [pd.read_pickle(arquivos_series[cnpj]) for cnpj in cnpjs]
+        return pd.concat(partes_cache, ignore_index=True).sort_values(["cnpj", "data"])
+
     arquivo = baixar_arquivo_cvm(
         URL_INFORME_DIARIO_CVM.format(mes=mes),
         nome_zip,
@@ -728,7 +768,7 @@ def carregar_informe_mes_cvm(mes: str, cnpjs: tuple[str, ...]) -> pd.DataFrame:
                 chunksize=100_000,
             ):
                 parte["cnpj"] = parte[coluna_cnpj].map(normalizar_cnpj)
-                parte = parte[parte["cnpj"].isin(set(cnpjs))]
+                parte = parte[parte["cnpj"].isin(set(faltantes))]
                 if not parte.empty:
                     partes_filtradas.append(parte.copy())
 
@@ -752,17 +792,16 @@ def carregar_informe_mes_cvm(mes: str, cnpjs: tuple[str, ...]) -> pd.DataFrame:
         if coluna not in dados:
             dados[coluna] = pd.NA
         dados[coluna] = pd.to_numeric(dados[coluna], errors="coerce")
-    return dados[
-        [
-            "cnpj",
-            "data",
-            "cota",
-            "patrimonio",
-            "captacao_dia",
-            "resgate_dia",
-            "cotistas",
-        ]
-    ].sort_values(["cnpj", "data"])
+    dados = dados[colunas_saida].sort_values(["cnpj", "data"])
+
+    for cnpj in faltantes:
+        serie_fundo = dados[dados["cnpj"].eq(cnpj)].copy()
+        temporario = arquivos_series[cnpj].with_suffix(".tmp")
+        serie_fundo.to_pickle(temporario)
+        temporario.replace(arquivos_series[cnpj])
+
+    partes_cache = [pd.read_pickle(arquivos_series[cnpj]) for cnpj in cnpjs]
+    return pd.concat(partes_cache, ignore_index=True).sort_values(["cnpj", "data"])
 
 
 @st.cache_data(ttl=86_400, show_spinner=False)
@@ -839,15 +878,116 @@ def carregar_extrato_fundos_cvm(cnpjs: tuple[str, ...]) -> pd.DataFrame:
     return extrato
 
 
+@st.cache_data(show_spinner=False)
+def carregar_informe_ano_cvm(ano: int, cnpjs: tuple[str, ...]) -> pd.DataFrame:
+    colunas_saida = [
+        "cnpj", "data", "cota", "patrimonio",
+        "captacao_dia", "resgate_dia", "cotistas",
+    ]
+    pasta_series = Path(tempfile.gettempdir()) / "radar_retorno_cvm" / "series_fundos"
+    pasta_series.mkdir(parents=True, exist_ok=True)
+    arquivos_series = {
+        cnpj: pasta_series / f"{cnpj}_{ano}.pkl" for cnpj in cnpjs
+    }
+    faltantes = [cnpj for cnpj, caminho in arquivos_series.items() if not caminho.exists()]
+    if faltantes:
+        arquivo = baixar_arquivo_cvm(
+            URL_INFORME_HISTORICO_CVM.format(ano=ano),
+            f"inf_diario_fi_{ano}.zip",
+            validade_segundos=31_536_000,
+        )
+        partes_filtradas = []
+        with zipfile.ZipFile(arquivo) as pacote:
+            for nome_csv in pacote.namelist():
+                if not nome_csv.lower().endswith(".csv"):
+                    continue
+                with pacote.open(nome_csv) as cabecalho_arquivo:
+                    cabecalho = pd.read_csv(
+                        cabecalho_arquivo, sep=";", encoding="latin1", nrows=0
+                    ).columns.tolist()
+                coluna_cnpj = (
+                    "CNPJ_FUNDO_CLASSE"
+                    if "CNPJ_FUNDO_CLASSE" in cabecalho
+                    else "CNPJ_FUNDO"
+                )
+                desejadas = [
+                    coluna_cnpj, "DT_COMPTC", "VL_QUOTA", "VL_PATRIM_LIQ",
+                    "CAPTC_DIA", "RESG_DIA", "NR_COTST",
+                ]
+                existentes = [coluna for coluna in desejadas if coluna in cabecalho]
+                with pacote.open(nome_csv) as dados_arquivo:
+                    for parte in pd.read_csv(
+                        dados_arquivo,
+                        sep=";",
+                        encoding="latin1",
+                        dtype={coluna_cnpj: str},
+                        usecols=existentes,
+                        chunksize=100_000,
+                    ):
+                        parte["cnpj"] = parte[coluna_cnpj].map(normalizar_cnpj)
+                        parte = parte[parte["cnpj"].isin(set(faltantes))]
+                        if not parte.empty:
+                            partes_filtradas.append(parte.copy())
+        arquivo.unlink(missing_ok=True)
+        if partes_filtradas:
+            dados = pd.concat(partes_filtradas, ignore_index=True)
+        else:
+            dados = pd.DataFrame(columns=["cnpj", "DT_COMPTC", "VL_QUOTA"])
+        dados["data"] = pd.to_datetime(dados["DT_COMPTC"], errors="coerce")
+        dados = dados.rename(
+            columns={
+                "VL_QUOTA": "cota",
+                "VL_PATRIM_LIQ": "patrimonio",
+                "CAPTC_DIA": "captacao_dia",
+                "RESG_DIA": "resgate_dia",
+                "NR_COTST": "cotistas",
+            }
+        )
+        for coluna in colunas_saida[2:]:
+            if coluna not in dados:
+                dados[coluna] = pd.NA
+            dados[coluna] = pd.to_numeric(dados[coluna], errors="coerce")
+        dados = dados[colunas_saida].sort_values(["cnpj", "data"])
+        for cnpj in faltantes:
+            serie_fundo = dados[dados["cnpj"].eq(cnpj)].copy()
+            temporario = arquivos_series[cnpj].with_suffix(".tmp")
+            serie_fundo.to_pickle(temporario)
+            temporario.replace(arquivos_series[cnpj])
+
+    partes_cache = [pd.read_pickle(arquivos_series[cnpj]) for cnpj in cnpjs]
+    return pd.concat(partes_cache, ignore_index=True).sort_values(["cnpj", "data"])
+
+
 @st.cache_data(ttl=86_400, show_spinner=False)
 def carregar_historico_fundos_cvm(
     cnpjs: tuple[str, ...],
-    anos: int,
+    meses: int | None,
+    data_inicio: str | None = None,
 ) -> pd.DataFrame:
     periodo_final = pd.Period(date.today(), freq="M")
-    periodo_inicial = periodo_final - anos * 12
+    if meses is None:
+        inicio = pd.Timestamp(data_inicio) if data_inicio else pd.Timestamp("2000-01-01")
+        periodo_inicial = inicio.to_period("M")
+    else:
+        periodo_inicial = periodo_final - meses
     partes = []
-    for periodo in pd.period_range(periodo_inicial, periodo_final, freq="M"):
+    primeiro_ano_mensal = 2021
+    ultimo_ano_historico = min(periodo_final.year, primeiro_ano_mensal - 1)
+    for ano in range(periodo_inicial.year, ultimo_ano_historico + 1):
+        try:
+            parte = carregar_informe_ano_cvm(ano, cnpjs)
+        except requests.HTTPError as erro:
+            if erro.response is not None and erro.response.status_code == 404:
+                continue
+            raise
+        if not parte.empty:
+            partes.append(parte)
+
+    inicio_mensal = max(
+        periodo_inicial,
+        pd.Period(f"{primeiro_ano_mensal}-01", freq="M"),
+    )
+    for periodo in pd.period_range(inicio_mensal, periodo_final, freq="M"):
         try:
             parte = carregar_informe_mes_cvm(periodo.strftime("%Y%m"), cnpjs)
         except requests.HTTPError as erro:
@@ -859,6 +999,7 @@ def carregar_historico_fundos_cvm(
     if not partes:
         raise RuntimeError("A CVM não retornou histórico para os fundos selecionados.")
     historico = pd.concat(partes, ignore_index=True)
+    historico = historico[historico["data"] >= periodo_inicial.start_time]
     return (
         historico.dropna(subset=["data", "cota"])
         .drop_duplicates(["cnpj", "data"], keep="last")
@@ -1248,19 +1389,19 @@ def criar_grafico_evolucao_fundos(series: dict[str, pd.Series]):
     fig = go.Figure()
     for (nome, serie), cor in zip(series.items(), cores):
         serie = serie.dropna().sort_index()
-        normalizada = serie / serie.iloc[0] * 100
+        retorno_acumulado = (serie / serie.iloc[0] - 1) * 100
         fig.add_trace(
             go.Scatter(
-                x=normalizada.index,
-                y=normalizada.values,
+                x=retorno_acumulado.index,
+                y=retorno_acumulado.values,
                 mode="lines",
                 name=nome,
                 line={"width": 2.4, "color": cor},
-                hovertemplate="%{x|%d/%m/%Y}<br>Índice: %{y:.2f}<extra></extra>",
+                hovertemplate="%{x|%d/%m/%Y}<br>Retorno: %{y:.2f}%<extra></extra>",
             )
         )
     fig.update_layout(
-        title="Evolução da rentabilidade · início em 100",
+        title="Rentabilidade acumulada · início em 0%",
         height=500,
         margin={"l": 25, "r": 20, "t": 65, "b": 85},
         hovermode="x unified",
@@ -1270,7 +1411,7 @@ def criar_grafico_evolucao_fundos(series: dict[str, pd.Series]):
         paper_bgcolor="white",
     )
     fig.update_xaxes(showgrid=False, fixedrange=True)
-    fig.update_yaxes(gridcolor="#e2e8f0", fixedrange=True)
+    fig.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0", fixedrange=True)
     return fig
 
 
@@ -1831,13 +1972,30 @@ def renderizar_fichas_fundos(cadastro, cnpjs, extrato, historico):
                 st.markdown(ficha, unsafe_allow_html=True)
 
 
-def renderizar_analise_completa_fundos(cadastro, cnpjs, benchmarks, anos):
+def renderizar_analise_completa_fundos(
+    cadastro,
+    cnpjs,
+    benchmarks,
+    meses_historico,
+    rotulo_historico,
+):
+    data_inicio_comum = None
+    if meses_historico is None:
+        datas_constituicao = cadastro.loc[
+            cadastro["cnpj"].isin(cnpjs), "data_constituicao"
+        ].dropna()
+        if not datas_constituicao.empty:
+            data_inicio_comum = datas_constituicao.max().strftime("%Y-%m-%d")
     with st.spinner(
         "Montando o histórico. No primeiro acesso, a consulta de vários anos pode levar alguns minutos..."
     ):
         extrato = carregar_extrato_fundos_cvm(tuple(cnpjs))
         try:
-            historico = carregar_historico_fundos_cvm(tuple(cnpjs), anos)
+            historico = carregar_historico_fundos_cvm(
+                tuple(cnpjs),
+                meses_historico,
+                data_inicio_comum,
+            )
         except RuntimeError as erro:
             if "não retornou histórico" not in str(erro).lower():
                 raise
@@ -1855,8 +2013,7 @@ def renderizar_analise_completa_fundos(cadastro, cnpjs, benchmarks, anos):
             renderizar_fichas_fundos(cadastro, cnpjs, extrato, historico_vazio)
             st.warning(
                 "A base pública de Informe Diário da CVM não disponibilizou cotas "
-                f"para este fundo nos últimos {anos} "
-                f"{'ano' if anos == 1 else 'anos'}. Isso não significa que o fundo "
+                f"para este fundo no período “{rotulo_historico}”. Isso não significa que o fundo "
                 "não possua histórico em outras bases. Tente ampliar o período; sem "
                 "cotas públicas no intervalo, os gráficos não podem ser calculados."
             )
@@ -1916,7 +2073,7 @@ def renderizar_analise_completa_fundos(cadastro, cnpjs, benchmarks, anos):
         data_final = min(serie.index.max() for serie in series_exibidas.values())
         st.caption(
             f"Séries comparadas em uma base comum, de {data_inicial:%d/%m/%Y} a "
-            f"{data_final:%d/%m/%Y}. Base 100 no início do gráfico."
+            f"{data_final:%d/%m/%Y}. O retorno acumulado começa em 0%."
         )
 
     with st.expander("Análise de risco", expanded=False):
@@ -1973,20 +2130,28 @@ def renderizar_analise_completa_fundos(cadastro, cnpjs, benchmarks, anos):
     with st.expander("Janelas móveis", expanded=False):
         st.caption(
             f"Intervalo histórico usado: {data_inicial:%d/%m/%Y} a {data_final:%d/%m/%Y} "
-            f"({anos} {'ano' if anos == 1 else 'anos'} selecionados no topo). "
+            f"({rotulo_historico} selecionado no topo). "
             "Cada ponto representa uma entrada no fechamento de um mês."
         )
         opcoes_janela = {
+            "1 mês": 1,
+            "3 meses": 3,
             "6 meses": 6,
             "12 meses": 12,
             "2 anos": 24,
             "3 anos": 36,
             "5 anos": 60,
         }
+        if meses_historico is not None and meses_historico <= 3:
+            indice_janela_padrao = 0
+        elif meses_historico is not None and meses_historico <= 6:
+            indice_janela_padrao = 1
+        else:
+            indice_janela_padrao = 3
         janela_escolhida = st.selectbox(
             "Tamanho de cada janela",
             list(opcoes_janela),
-            index=1,
+            index=indice_janela_padrao,
             key=f"janela_fundos_{'_'.join(cnpjs)}",
         )
         meses_janela = opcoes_janela[janela_escolhida]
@@ -2083,7 +2248,15 @@ def pagina_fundos():
         "A pesquisa considera nome, CNPJ, administrador e gestor."
     )
     aba_pesquisa, aba_comparacao = st.tabs(["Analisar um fundo", "Comparar fundos"])
-    opcoes_periodo = {"1 ano": 1, "2 anos": 2, "3 anos": 3, "5 anos": 5}
+    opcoes_periodo = {
+        "3 meses": 3,
+        "6 meses": 6,
+        "1 ano": 12,
+        "2 anos": 24,
+        "3 anos": 36,
+        "5 anos": 60,
+        "Desde o início comum": None,
+    }
     opcoes_benchmark = ["CDI", "Ibovespa", "IDIV"]
 
     with aba_pesquisa:
@@ -2091,7 +2264,7 @@ def pagina_fundos():
         coluna_periodo, coluna_benchmark = st.columns([1, 2])
         with coluna_periodo:
             periodo = st.selectbox(
-                "Histórico do gráfico", list(opcoes_periodo), index=1, key="periodo_fundo_individual"
+                "Histórico do gráfico", list(opcoes_periodo), index=2, key="periodo_fundo_individual"
             )
         with coluna_benchmark:
             benchmarks = st.multiselect(
@@ -2112,7 +2285,11 @@ def pagina_fundos():
         if configuracao == (cnpj, tuple(benchmarks), opcoes_periodo[periodo]):
             try:
                 renderizar_analise_completa_fundos(
-                    cadastro, [cnpj], benchmarks, opcoes_periodo[periodo]
+                    cadastro,
+                    [cnpj],
+                    benchmarks,
+                    opcoes_periodo[periodo],
+                    periodo,
                 )
             except Exception as erro:
                 st.error("Não foi possível montar a análise completa deste fundo.")
@@ -2138,7 +2315,7 @@ def pagina_fundos():
         coluna_periodo, coluna_benchmark = st.columns([1, 2])
         with coluna_periodo:
             periodo = st.selectbox(
-                "Histórico do gráfico", list(opcoes_periodo), index=1, key="periodo_comparacao_fundos"
+                "Histórico do gráfico", list(opcoes_periodo), index=2, key="periodo_comparacao_fundos"
             )
         with coluna_benchmark:
             benchmarks = st.multiselect(
@@ -2159,7 +2336,11 @@ def pagina_fundos():
         if configuracao == (tuple(cnpjs), tuple(benchmarks), opcoes_periodo[periodo]):
             try:
                 renderizar_analise_completa_fundos(
-                    cadastro, cnpjs, benchmarks, opcoes_periodo[periodo]
+                    cadastro,
+                    cnpjs,
+                    benchmarks,
+                    opcoes_periodo[periodo],
+                    periodo,
                 )
             except Exception as erro:
                 st.error("Não foi possível concluir a comparação dos fundos.")
