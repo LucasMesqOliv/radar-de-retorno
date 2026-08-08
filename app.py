@@ -1562,7 +1562,8 @@ def renderizar_fichas_fundos(cadastro, cnpjs, extrato, historico):
         """
         <style>
         .fundo-ficha {
-            max-width: 720px;
+            width: 100%;
+            max-width: 480px;
             margin: 0 0 0.75rem 0;
             overflow: hidden;
             border: 1px solid #cfdae8;
@@ -1589,7 +1590,7 @@ def renderizar_fichas_fundos(cadastro, cnpjs, extrato, historico):
         }
         .fundo-ficha-linha {
             display: grid;
-            grid-template-columns: minmax(120px, 42%) minmax(0, 58%);
+            grid-template-columns: minmax(120px, 46%) minmax(0, 54%);
             align-items: center;
             gap: 0.5rem;
             min-height: 29px;
