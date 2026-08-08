@@ -2716,18 +2716,23 @@ def criar_grafico(
     }
     estilos = {"prefixado": "dash", "referencia": "dot"}
     fig = go.Figure()
-    exibir_acumulado = visualizacao == "Acumulado em barras"
+    exibir_acumulado = visualizacao == "Acumulado em linhas"
 
     for codigo in series_escolhidas:
         if exibir_acumulado:
             fig.add_trace(
-                go.Bar(
+                go.Scatter(
                     x=analise["data_final"],
                     y=analise[f"{codigo}_acumulado"] * 100,
+                    mode="lines",
                     name=nomes[codigo],
-                    marker_color=cores[codigo],
-                    opacity=0.82,
+                    line={
+                        "color": cores[codigo],
+                        "width": 2.5,
+                        "dash": estilos.get(codigo, "solid"),
+                    },
                     hovertemplate=(
+                        f"<b>{nomes[codigo]}</b><br>"
                         "%{x|%m/%Y}<br>Retorno acumulado da janela: "
                         "%{y:.2f}%<extra></extra>"
                     ),
@@ -2746,7 +2751,9 @@ def criar_grafico(
                         "dash": estilos.get(codigo, "solid"),
                     },
                     hovertemplate=(
-                        "%{x|%m/%Y}<br>Retorno anualizado: %{y:.2f}%<extra></extra>"
+                        f"<b>{nomes[codigo]}</b><br>"
+                        "%{x|%m/%Y}<br>Retorno anualizado: "
+                        "%{y:.2f}%<extra></extra>"
                     ),
                 )
             )
@@ -2767,9 +2774,6 @@ def criar_grafico(
         height=520,
         margin={"l": 25, "r": 20, "t": 75, "b": 80},
         hovermode="x unified",
-        barmode="group",
-        bargap=0.06,
-        bargroupgap=0.02,
         dragmode=False,
         legend={
             "orientation": "h",
@@ -2870,6 +2874,7 @@ def criar_grafico_periodo(
                     "dash": estilos.get(codigo, "solid"),
                 },
                 hovertemplate=(
+                    f"<b>{nomes[codigo]}</b><br>"
                     "%{x|%m/%Y}<br>Valor do índice: %{y:.2f}<extra></extra>"
                 ),
             )
@@ -3113,7 +3118,7 @@ st.title("Análise de índices")
 st.caption(
     "Compare diferentes referências em janelas móveis mensais. Cada mês "
     "representa uma janela encerrada naquela data; você pode visualizar a "
-    "taxa anualizada em linhas ou o retorno total acumulado em barras."
+    "taxa anualizada ou o retorno total acumulado, ambos em linhas."
 )
 
 with st.container(border=True):
@@ -3247,13 +3252,13 @@ try:
 
     visualizacao_janelas = st.radio(
         "Visualização das janelas móveis",
-        ["Anualizado em linhas", "Acumulado em barras"],
+        ["Anualizado em linhas", "Acumulado em linhas"],
         horizontal=True,
         key="visualizacao_janelas_indices",
     )
-    if visualizacao_janelas == "Acumulado em barras":
+    if visualizacao_janelas == "Acumulado em linhas":
         st.caption(
-            "Cada barra representa o retorno total da janela encerrada naquele mês, "
+            "Cada ponto representa o retorno total da janela encerrada naquele mês, "
             "sem transformar o resultado em uma taxa anual."
         )
 
