@@ -2969,6 +2969,64 @@ def criar_tabela_estatisticas(
     return pd.DataFrame(linhas)
 
 
+def exibir_tabela_estatisticas(
+    analise: pd.DataFrame,
+    series_escolhidas: list[str],
+    nomes: dict[str, str],
+    prazo_anos: int,
+    acumulado: bool = False,
+    compacta: bool = False,
+) -> None:
+    titulo = "Retornos acumulados" if acumulado else "Retornos anualizados"
+    st.markdown(f"**{titulo}**")
+    st.caption(
+        (
+            f"Retorno total obtido ao longo de cada janela de {prazo_anos} anos, "
+            "sem anualização."
+        )
+        if acumulado
+        else "Taxa equivalente anual de cada janela analisada."
+    )
+
+    tabela = criar_tabela_estatisticas(
+        analise,
+        series_escolhidas,
+        nomes,
+        acumulado=acumulado,
+    )
+    if compacta:
+        tabela = tabela.rename(
+            columns={
+                "Pior retorno": "Pior",
+                "Final da pior janela": "Fim pior",
+                "Retorno mediano": "Mediana",
+                "Melhor retorno": "Melhor",
+                "Final da melhor janela": "Fim melhor",
+            }
+        )
+
+    st.dataframe(
+        tabela,
+        hide_index=True,
+        width="stretch" if compacta else 1050,
+        height=min(190, 48 + 32 * len(series_escolhidas)),
+        row_height=32,
+        column_config={
+            "Referência": st.column_config.TextColumn(width="medium"),
+            "Pior retorno": st.column_config.TextColumn(width="small"),
+            "Final da pior janela": st.column_config.TextColumn(width="medium"),
+            "Retorno mediano": st.column_config.TextColumn(width="small"),
+            "Melhor retorno": st.column_config.TextColumn(width="small"),
+            "Final da melhor janela": st.column_config.TextColumn(width="medium"),
+            "Pior": st.column_config.TextColumn(width="small"),
+            "Fim pior": st.column_config.TextColumn(width="small"),
+            "Mediana": st.column_config.TextColumn(width="small"),
+            "Melhor": st.column_config.TextColumn(width="small"),
+            "Fim melhor": st.column_config.TextColumn(width="small"),
+        },
+    )
+
+
 def formatar_percentual(valor: float, casas: int = 1) -> str:
     return f"{valor:.{casas}%}".replace(".", ",")
 
@@ -3308,52 +3366,43 @@ try:
 
     st.subheader("Melhores e piores janelas")
     st.caption(
-        "A primeira tabela mostra os retornos anualizados. As datas indicam o mês "
-        "de encerramento de cada janela."
+        "Escolha a leitura desejada. As datas indicam o mês de encerramento "
+        "de cada janela."
     )
-    if visualizacao_janelas == "Acumulado em linhas":
-        st.markdown("**Retornos anualizados**")
-    st.dataframe(
-        criar_tabela_estatisticas(analise, series_escolhidas, nomes),
-        hide_index=True,
-        width=1050,
-        height=min(190, 48 + 32 * len(series_escolhidas)),
-        row_height=32,
-        column_config={
-            "Referência": st.column_config.TextColumn(width="medium"),
-            "Pior retorno": st.column_config.TextColumn(width="small"),
-            "Final da pior janela": st.column_config.TextColumn(width="medium"),
-            "Retorno mediano": st.column_config.TextColumn(width="small"),
-            "Melhor retorno": st.column_config.TextColumn(width="small"),
-            "Final da melhor janela": st.column_config.TextColumn(width="medium"),
-        },
+    visualizacao_tabelas = st.radio(
+        "Visualização das tabelas",
+        ["Anualizado", "Acumulado", "Ambos"],
+        horizontal=True,
+        key="visualizacao_tabelas_indices",
     )
 
-    if visualizacao_janelas == "Acumulado em linhas":
-        st.markdown("**Retornos acumulados da janela**")
-        st.caption(
-            f"Retorno total obtido ao longo de cada janela de {prazo_anos} anos, "
-            "sem anualização."
-        )
-        st.dataframe(
-            criar_tabela_estatisticas(
+    if visualizacao_tabelas == "Ambos":
+        coluna_anualizada, coluna_acumulada = st.columns(2, gap="medium")
+        with coluna_anualizada:
+            exibir_tabela_estatisticas(
                 analise,
                 series_escolhidas,
                 nomes,
+                prazo_anos,
+                acumulado=False,
+                compacta=True,
+            )
+        with coluna_acumulada:
+            exibir_tabela_estatisticas(
+                analise,
+                series_escolhidas,
+                nomes,
+                prazo_anos,
                 acumulado=True,
-            ),
-            hide_index=True,
-            width=1050,
-            height=min(190, 48 + 32 * len(series_escolhidas)),
-            row_height=32,
-            column_config={
-                "Referência": st.column_config.TextColumn(width="medium"),
-                "Pior retorno": st.column_config.TextColumn(width="small"),
-                "Final da pior janela": st.column_config.TextColumn(width="medium"),
-                "Retorno mediano": st.column_config.TextColumn(width="small"),
-                "Melhor retorno": st.column_config.TextColumn(width="small"),
-                "Final da melhor janela": st.column_config.TextColumn(width="medium"),
-            },
+                compacta=True,
+            )
+    else:
+        exibir_tabela_estatisticas(
+            analise,
+            series_escolhidas,
+            nomes,
+            prazo_anos,
+            acumulado=visualizacao_tabelas == "Acumulado",
         )
 
     st.subheader("Desempenho no período")
