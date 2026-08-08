@@ -44,6 +44,467 @@ def exigir_senha():
 exigir_senha()
 
 
+def aplicar_identidade_visual():
+    """Aplica a identidade visual do Radar sem depender de imagens externas."""
+    st.markdown(
+        """
+        <style>
+        :root {
+            --radar-navy: #06162f;
+            --radar-blue: #1769e0;
+            --radar-cyan: #19c2d8;
+            --radar-coral: #ff6b4a;
+            --radar-ink: #14213d;
+            --radar-muted: #667085;
+            --radar-surface: #ffffff;
+            --radar-bg: #f4f7fb;
+        }
+
+        .stApp {
+            background:
+                radial-gradient(circle at 92% 2%, rgba(25, 194, 216, .10), transparent 24rem),
+                var(--radar-bg);
+            color: var(--radar-ink);
+        }
+
+        html, body, [class*="css"] {
+            font-family: Inter, "Segoe UI", Arial, sans-serif;
+        }
+
+        [data-testid="stHeader"] {
+            background: rgba(244, 247, 251, .88);
+            backdrop-filter: blur(10px);
+        }
+
+        [data-testid="stSidebar"] {
+            background: var(--radar-navy);
+            border-right: 1px solid rgba(255,255,255,.08);
+        }
+
+        [data-testid="stSidebar"] * {
+            color: #eef5ff;
+        }
+
+        [data-testid="stSidebar"] [data-baseweb="select"] > div,
+        [data-testid="stSidebar"] input,
+        [data-testid="stSidebar"] [data-baseweb="input"] > div {
+            background: rgba(255,255,255,.09) !important;
+            border-color: rgba(255,255,255,.20) !important;
+        }
+
+        [data-testid="stSidebar"] [role="radiogroup"] label {
+            padding: .55rem .65rem;
+            margin: .12rem 0;
+            border-radius: .55rem;
+            transition: background .15s ease;
+        }
+
+        [data-testid="stSidebar"] [role="radiogroup"] label:hover {
+            background: rgba(255,255,255,.08);
+        }
+
+        .radar-sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: .75rem;
+            padding: .45rem 0 1rem;
+            border-bottom: 1px solid rgba(255,255,255,.12);
+            margin-bottom: .9rem;
+        }
+
+        .radar-mark {
+            display: grid;
+            place-items: center;
+            width: 2.35rem;
+            height: 2.35rem;
+            border-radius: .72rem;
+            background: linear-gradient(135deg, var(--radar-cyan), var(--radar-blue));
+            color: white;
+            font-weight: 800;
+            box-shadow: 0 8px 24px rgba(25,194,216,.24);
+        }
+
+        .radar-brand-name { font-weight: 760; letter-spacing: -.02em; }
+        .radar-brand-sub { color: #9eb1cc !important; font-size: .75rem; }
+
+        .radar-topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            margin: -.2rem 0 1.15rem;
+            padding: .2rem .15rem;
+        }
+
+        .radar-section-label {
+            color: var(--radar-blue);
+            font-size: .76rem;
+            font-weight: 800;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+        }
+
+        .radar-live {
+            display: inline-flex;
+            align-items: center;
+            gap: .45rem;
+            padding: .38rem .7rem;
+            border: 1px solid #d7e1ef;
+            border-radius: 99px;
+            background: white;
+            color: var(--radar-muted);
+            font-size: .78rem;
+            white-space: nowrap;
+        }
+
+        .radar-live::before {
+            content: "";
+            width: .48rem;
+            height: .48rem;
+            border-radius: 50%;
+            background: #20b486;
+            box-shadow: 0 0 0 4px rgba(32,180,134,.12);
+        }
+
+        .radar-hero {
+            position: relative;
+            overflow: hidden;
+            padding: clamp(2rem, 5vw, 4.4rem);
+            margin-bottom: 1.25rem;
+            border-radius: 1.15rem;
+            background:
+                linear-gradient(110deg, rgba(6,22,47,.98), rgba(18,75,155,.94)),
+                var(--radar-navy);
+            box-shadow: 0 18px 50px rgba(6,22,47,.15);
+            color: white;
+        }
+
+        .radar-hero::after {
+            content: "";
+            position: absolute;
+            width: 24rem;
+            height: 24rem;
+            right: -7rem;
+            top: -10rem;
+            border-radius: 50%;
+            border: 4rem solid rgba(25,194,216,.16);
+        }
+
+        .radar-hero-kicker {
+            color: #72e6f3;
+            font-weight: 800;
+            font-size: .76rem;
+            letter-spacing: .15em;
+        }
+
+        .radar-hero h1 {
+            position: relative;
+            z-index: 1;
+            max-width: 760px;
+            margin: .75rem 0 .65rem;
+            color: white;
+            font-size: clamp(2rem, 4vw, 3.45rem);
+            line-height: 1.04;
+            letter-spacing: -.045em;
+        }
+
+        .radar-hero p {
+            position: relative;
+            z-index: 1;
+            max-width: 690px;
+            margin: 0;
+            color: #c9d8eb;
+            font-size: 1rem;
+        }
+
+        .radar-search-label {
+            margin: 1.4rem 0 .2rem;
+            color: var(--radar-ink);
+            font-size: 1.15rem;
+            font-weight: 760;
+        }
+
+        div[data-testid="stTextInput"] input {
+            min-height: 3.15rem;
+            border-radius: .72rem;
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border-color: #dce5f0;
+            border-radius: .85rem;
+            background: rgba(255,255,255,.88);
+            box-shadow: 0 5px 18px rgba(24,44,76,.045);
+        }
+
+        div[data-testid="stMetric"] {
+            padding: 1rem 1.05rem;
+            border: 1px solid #dce5f0;
+            border-top: 3px solid var(--radar-blue);
+            border-radius: .78rem;
+            background: white;
+            box-shadow: 0 5px 18px rgba(24,44,76,.05);
+        }
+
+        .stButton > button, .stDownloadButton > button {
+            border-radius: .58rem;
+            border-color: var(--radar-blue);
+            font-weight: 700;
+        }
+
+        .stButton > button[kind="primary"],
+        .stDownloadButton > button[kind="primary"] {
+            background: linear-gradient(100deg, var(--radar-blue), #0f8ee9);
+        }
+
+        .radar-card-kicker {
+            color: var(--radar-blue);
+            font-size: .73rem;
+            font-weight: 800;
+            letter-spacing: .09em;
+            text-transform: uppercase;
+        }
+
+        .radar-card-title {
+            margin: .25rem 0 .45rem;
+            color: var(--radar-ink);
+            font-size: 1.2rem;
+            font-weight: 780;
+        }
+
+        .radar-card-copy {
+            min-height: 3.1rem;
+            color: var(--radar-muted);
+            font-size: .88rem;
+            line-height: 1.5;
+        }
+
+        .radar-coming {
+            display: inline-block;
+            margin-bottom: .75rem;
+            padding: .24rem .55rem;
+            border-radius: 99px;
+            background: #fff0ec;
+            color: #ca4f34;
+            font-size: .7rem;
+            font-weight: 800;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+        }
+
+        .radar-footer {
+            margin-top: 2.5rem;
+            padding: 1.35rem 0 .35rem;
+            border-top: 1px solid #d8e1ec;
+            color: var(--radar-muted);
+            font-size: .78rem;
+        }
+
+        @media (max-width: 700px) {
+            .radar-hero { padding: 1.7rem 1.25rem; border-radius: .85rem; }
+            .radar-hero::after { opacity: .55; }
+            .radar-live { display: none; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def navegar_para(destino: str):
+    st.session_state["pagina_radar"] = destino
+
+
+def cabecalho_contextual(secao: str, status: str = "Dados de mercado"):
+    st.markdown(
+        f"""
+        <div class="radar-topbar">
+            <span class="radar-section-label">{secao}</span>
+            <span class="radar-live">{status}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def rodape_radar():
+    st.markdown(
+        """
+        <div class="radar-footer">
+            Criado por Lucas Mesquita &nbsp;·&nbsp; Economista e assessor de
+            investimentos &nbsp;·&nbsp; Aprovado no CFA Level II
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def pagina_inicial():
+    cabecalho_contextual("Visão geral", "Plataforma de análises")
+    st.markdown(
+        """
+        <section class="radar-hero">
+            <span class="radar-hero-kicker">RADAR DE RETORNO</span>
+            <h1>Encontre contexto antes de comparar retornos.</h1>
+            <p>
+                Explore índices, consistência histórica e, em breve, fundos de
+                investimento em uma experiência única, clara e orientada a decisões.
+            </p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="radar-search-label">O que você deseja analisar?</div>',
+        unsafe_allow_html=True,
+    )
+    busca = st.text_input(
+        "Pesquisar ferramentas",
+        placeholder="Busque por índices, janelas móveis, CDI, IPCA ou fundos...",
+        label_visibility="collapsed",
+        key="busca_inicio",
+    )
+
+    modulos = [
+        {
+            "pagina": "Análise de índices",
+            "kicker": "Disponível agora",
+            "titulo": "Análise de índices",
+            "texto": (
+                "Compare CDI, IPCA+, prefixado e S&P 500 em janelas móveis "
+                "e períodos personalizados."
+            ),
+            "termos": "índices indice janelas móveis cdi ipca prefixado sp 500",
+        },
+        {
+            "pagina": "Fundos",
+            "kicker": "Nova área",
+            "titulo": "Pesquisa e comparação de fundos",
+            "texto": (
+                "Área separada para localizar fundos por nome ou CNPJ e preparar "
+                "comparações lado a lado."
+            ),
+            "termos": "fundos fundo cnpj pesquisa comparação previdência prev",
+        },
+    ]
+    termo = busca.strip().casefold()
+    exibidos = [
+        modulo for modulo in modulos
+        if not termo or termo in (modulo["titulo"] + " " + modulo["termos"]).casefold()
+    ]
+
+    if not exibidos:
+        st.info("Nenhuma ferramenta encontrada. Tente pesquisar por CDI, IPCA ou fundos.")
+    else:
+        colunas = st.columns(len(exibidos))
+        for coluna, modulo in zip(colunas, exibidos):
+            with coluna:
+                with st.container(border=True):
+                    st.markdown(
+                        f"""
+                        <div class="radar-card-kicker">{modulo['kicker']}</div>
+                        <div class="radar-card-title">{modulo['titulo']}</div>
+                        <div class="radar-card-copy">{modulo['texto']}</div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    st.button(
+                        "Acessar análise",
+                        key=f"abrir_{modulo['pagina']}",
+                        type="primary" if modulo["pagina"] == "Análise de índices" else "secondary",
+                        width="stretch",
+                        on_click=navegar_para,
+                        args=(modulo["pagina"],),
+                    )
+
+    st.markdown("### Uma plataforma, diferentes leituras")
+    coluna_1, coluna_2, coluna_3 = st.columns(3)
+    destaques = [
+        (coluna_1, "Consistência", "Veja como cada estratégia se comportou em vários pontos de entrada."),
+        (coluna_2, "Comparação", "Coloque referências diferentes sob o mesmo prazo e metodologia."),
+        (coluna_3, "Comunicação", "Transforme a análise selecionada em um relatório simples para o cliente."),
+    ]
+    for coluna, titulo, texto in destaques:
+        with coluna:
+            with st.container(border=True):
+                st.markdown(f"**{titulo}**")
+                st.caption(texto)
+    rodape_radar()
+
+
+def pagina_fundos():
+    cabecalho_contextual("Fundos de investimento", "Nova área")
+    st.markdown(
+        """
+        <section class="radar-hero">
+            <span class="radar-hero-kicker">PESQUISA E COMPARAÇÃO</span>
+            <h1>Fundos no mesmo radar.</h1>
+            <p>
+                Uma área independente para pesquisar fundos, organizar pares de
+                comparação e aplicar a mesma leitura de consistência histórica.
+            </p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    aba_pesquisa, aba_comparacao = st.tabs(["Pesquisar fundos", "Comparar fundos"])
+    with aba_pesquisa:
+        st.text_input(
+            "Nome ou CNPJ do fundo",
+            placeholder="Digite o nome ou CNPJ...",
+            key="pesquisa_fundo",
+        )
+        st.markdown(
+            '<span class="radar-coming">Base de dados em preparação</span>',
+            unsafe_allow_html=True,
+        )
+        st.info(
+            "A navegação desta área já está separada. A próxima etapa será conectar "
+            "a base oficial da CVM para exibir resultados reais de pesquisa."
+        )
+
+    with aba_comparacao:
+        coluna_a, coluna_b = st.columns(2)
+        coluna_a.text_input("Fundo principal", placeholder="Nome ou CNPJ", key="fundo_a")
+        coluna_b.text_input("Fundo de comparação", placeholder="Nome ou CNPJ", key="fundo_b")
+        st.button("Montar comparação", disabled=True, width="stretch")
+        st.caption(
+            "Nesta etapa entraremos com cota, retorno, volatilidade, patrimônio e "
+            "janelas móveis dos fundos selecionados."
+        )
+    rodape_radar()
+
+
+aplicar_identidade_visual()
+
+with st.sidebar:
+    st.markdown(
+        """
+        <div class="radar-sidebar-brand">
+            <div class="radar-mark">R</div>
+            <div>
+                <div class="radar-brand-name">Radar de Retorno</div>
+                <div class="radar-brand-sub">Inteligência de investimentos</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    pagina_atual = st.radio(
+        "Navegação",
+        ["Início", "Análise de índices", "Fundos"],
+        key="pagina_radar",
+    )
+
+if pagina_atual == "Início":
+    pagina_inicial()
+    st.stop()
+
+if pagina_atual == "Fundos":
+    pagina_fundos()
+    st.stop()
+
+
 @st.cache_data(ttl=86_400, show_spinner=False)
 def baixar_serie_bcb(codigo: int, ano_inicial: int) -> pd.DataFrame:
     """Baixa uma série do SGS/BCB em blocos anuais."""
@@ -601,7 +1062,8 @@ def gerar_pdf(dados_json: str) -> bytes:
         return saida.read_bytes()
 
 
-st.title("Radar de Retorno")
+cabecalho_contextual("Análise de índices")
+st.title("Análise de índices")
 st.caption(
     "Compare diferentes referências em janelas móveis mensais. Cada ponto "
     "representa o retorno anualizado na janela encerrada naquele mês."
@@ -622,6 +1084,7 @@ with st.container(border=True):
     )
 
 with st.sidebar:
+    st.divider()
     st.header("Parâmetros")
     rotulos_selecao = {
         "cdi": "CDI",
@@ -897,11 +1360,7 @@ try:
             on_click="ignore",
         )
 
-    st.divider()
-    st.caption(
-        "Criado por Lucas Mesquita | Economista e assessor de investimentos | "
-        "Aprovado no CFA Level II"
-    )
+    rodape_radar()
 
 except Exception as erro:
     st.error("Não foi possível carregar ou calcular os dados.")
