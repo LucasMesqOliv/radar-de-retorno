@@ -1349,11 +1349,11 @@ def calcular_frequencia_vitorias_janelas(
         linhas.append(
             {
                 "Comparativo": comparativo,
-                "Vitórias": vitorias,
+                "Principal venceu": vitorias,
                 "Empates": empates,
-                "Derrotas": derrotas,
-                "Janelas comparadas": len(alinhadas),
-                "Frequência de vitória": vitorias / len(alinhadas),
+                "Comparativo venceu": derrotas,
+                "Janelas": len(alinhadas),
+                "% de vitória do principal": vitorias / len(alinhadas),
             }
         )
     return pd.DataFrame(linhas)
@@ -1362,17 +1362,17 @@ def calcular_frequencia_vitorias_janelas(
 def criar_grafico_frequencia_vitorias(tabela: pd.DataFrame, principal: str):
     fig = go.Figure(
         go.Bar(
-            x=tabela["Frequência de vitória"] * 100,
+            x=tabela["% de vitória do principal"] * 100,
             y=tabela["Comparativo"],
             orientation="h",
             marker_color="#1769e0",
-            text=[f"{valor:.1%}" for valor in tabela["Frequência de vitória"]],
+            text=[f"{valor:.1%}" for valor in tabela["% de vitória do principal"]],
             textposition="inside",
             hovertemplate="%{y}<br>Vitórias: %{x:.1f}%<extra></extra>",
         )
     )
     fig.update_layout(
-        title=f"Frequência histórica de vitória · {principal}",
+        title="Percentual de janelas em que o fundo principal venceu",
         height=max(240, 90 + 54 * len(tabela)),
         margin={"l": 25, "r": 25, "t": 65, "b": 35},
         plot_bgcolor="white",
@@ -1424,6 +1424,9 @@ def criar_janelas_moveis_fundos(
     dados_janelas = {}
     for (nome, serie), cor in zip(series.items(), cores):
         mensal = serie.dropna().sort_index().resample("ME").last()
+        hoje = pd.Timestamp(date.today())
+        if hoje.day < hoje.days_in_month:
+            mensal = mensal[mensal.index.to_period("M") < hoje.to_period("M")]
         retorno = mensal.pct_change(meses_janela)
         if meses_janela >= 12:
             retorno = (1 + retorno) ** (12 / meses_janela) - 1
@@ -2202,7 +2205,14 @@ def renderizar_analise_completa_fundos(
                     f"Série principal: {principal}. As janelas são mensais e sobrepostas, "
                     "como na análise de índices."
                 )
-                if frequencia["Janelas comparadas"].min() < 12:
+                for _, linha in frequencia.iterrows():
+                    st.markdown(
+                        f"**Fundo principal × {linha['Comparativo']}:** o principal venceu "
+                        f"**{int(linha['Principal venceu'])} de {int(linha['Janelas'])} janelas "
+                        f"({linha['% de vitória do principal']:.1%})**; o comparativo venceu "
+                        f"{int(linha['Comparativo venceu'])}."
+                    )
+                if frequencia["Janelas"].min() < 12:
                     st.warning(
                         "A amostra possui menos de 12 janelas comparáveis. Percentuais "
                         "calculados com poucas observações devem ser interpretados com cautela."
@@ -2217,7 +2227,7 @@ def renderizar_analise_completa_fundos(
                     hide_index=True,
                     width="stretch",
                     column_config={
-                        "Frequência de vitória": st.column_config.NumberColumn(format="percent"),
+                        "% de vitória do principal": st.column_config.NumberColumn(format="percent"),
                     },
                 )
 
