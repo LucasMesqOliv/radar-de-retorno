@@ -1,12 +1,16 @@
 from datetime import date, datetime, timedelta, timezone
 import hmac
 import importlib.util
+import io
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
+import zipfile
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -431,47 +435,659 @@ def pagina_inicial():
     rodape_radar()
 
 
+URL_CADASTRO_FUNDOS_CVM = (
+    "https://dados.cvm.gov.br/dados/FI/CAD/DADOS/registro_fundo_classe.zip"
+)
+URL_INFORME_DIARIO_CVM = (
+    "https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/"
+    "inf_diario_fi_{mes}.zip"
+)
+
+
+def normalizar_cnpj(valor) -> str:
+    return re.sub(r"\D", "", str(valor or "")).zfill(14)
+
+
+def formatar_cnpj(valor) -> str:
+    cnpj = normalizar_cnpj(valor)
+    return (
+        f"{cnpj[:2]}.{cnpj[2:5]}.{cnpj[5:8]}/"
+        f"{cnpj[8:12]}-{cnpj[12:]}"
+    )
+
+
+def normalizar_busca(valor) -> str:
+    texto = unicodedata.normalize("NFKD", str(valor or ""))
+    return "".join(letra for letra in texto if not unicodedata.combining(letra)).casefold()
+
+
+def formatar_reais(valor) -> str:
+    if pd.isna(valor):
+        return "—"
+    numero = float(valor)
+    if abs(numero) >= 1_000_000_000:
+        return f"R$ {numero / 1_000_000_000:.2f} bi".replace(".", ",")
+    if abs(numero) >= 1_000_000:
+        return f"R$ {numero / 1_000_000:.1f} mi".replace(".", ",")
+    return f"R$ {numero:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def baixar_arquivo_cvm(url: str, nome: str) -> Path:
+    pasta_cache = Path(tempfile.gettempdir()) / "radar_retorno_cvm"
+    pasta_cache.mkdir(parents=True, exist_ok=True)
+    arquivo = pasta_cache / nome
+    atualizado = (
+        arquivo.exists()
+        and arquivo.stat().st_size > 1_000
+        and time.time() - arquivo.stat().st_mtime < 86_400
+    )
+    if atualizado:
+        return arquivo
+
+    resposta = requests.get(
+        url,
+        headers={"User-Agent": "Radar-de-Retorno/1.0"},
+        timeout=(15, 180),
+        stream=True,
+    )
+    resposta.raise_for_status()
+    with tempfile.NamedTemporaryFile(
+        mode="wb", dir=pasta_cache, prefix=f"{nome}.", suffix=".part", delete=False
+    ) as temporario:
+        for bloco in resposta.iter_content(chunk_size=1024 * 1024):
+            if bloco:
+                temporario.write(bloco)
+        caminho_temporario = Path(temporario.name)
+
+    if not zipfile.is_zipfile(caminho_temporario):
+        caminho_temporario.unlink(missing_ok=True)
+        raise RuntimeError("A CVM retornou um arquivo inválido.")
+    caminho_temporario.replace(arquivo)
+    return arquivo
+
+
+@st.cache_data(ttl=86_400, show_spinner=False)
+def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
+    arquivo = baixar_arquivo_cvm(
+        URL_CADASTRO_FUNDOS_CVM,
+        "registro_fundo_classe.zip",
+    )
+    with zipfile.ZipFile(arquivo) as pacote:
+        with pacote.open("registro_classe.csv") as dados_classe:
+            classes = pd.read_csv(
+                dados_classe,
+                sep=";",
+                encoding="latin1",
+                dtype=str,
+                usecols=[
+                    "ID_Registro_Fundo",
+                    "CNPJ_Classe",
+                    "Denominacao_Social",
+                    "Situacao",
+                    "Tipo_Classe",
+                    "Classificacao",
+                    "Classificacao_Anbima",
+                    "Publico_Alvo",
+                    "Patrimonio_Liquido",
+                    "Data_Patrimonio_Liquido",
+                ],
+            )
+        with pacote.open("registro_fundo.csv") as dados_fundo:
+            fundos = pd.read_csv(
+                dados_fundo,
+                sep=";",
+                encoding="latin1",
+                dtype=str,
+                usecols=[
+                    "ID_Registro_Fundo",
+                    "CNPJ_Fundo",
+                    "Denominacao_Social",
+                    "Situacao",
+                    "Tipo_Fundo",
+                    "Patrimonio_Liquido",
+                    "Data_Patrimonio_Liquido",
+                    "Administrador",
+                    "Gestor",
+                ],
+            )
+
+    metadados_fundo = fundos[
+        ["ID_Registro_Fundo", "Administrador", "Gestor", "CNPJ_Fundo"]
+    ].drop_duplicates("ID_Registro_Fundo")
+    classes = classes.merge(metadados_fundo, on="ID_Registro_Fundo", how="left")
+    classes = classes.rename(
+        columns={
+            "CNPJ_Classe": "cnpj",
+            "Denominacao_Social": "nome",
+            "Situacao": "situacao",
+            "Tipo_Classe": "tipo",
+            "Classificacao": "classificacao",
+            "Classificacao_Anbima": "classificacao_anbima",
+            "Publico_Alvo": "publico_alvo",
+            "Patrimonio_Liquido": "patrimonio_cadastral",
+            "Data_Patrimonio_Liquido": "data_patrimonio_cadastral",
+            "Administrador": "administrador",
+            "Gestor": "gestor",
+        }
+    )
+
+    cnpjs_classes = set(classes["cnpj"].dropna().map(normalizar_cnpj))
+    fundos_adicionais = fundos[
+        ~fundos["CNPJ_Fundo"].map(normalizar_cnpj).isin(cnpjs_classes)
+    ].copy()
+    fundos_adicionais = fundos_adicionais.rename(
+        columns={
+            "CNPJ_Fundo": "cnpj",
+            "Denominacao_Social": "nome",
+            "Situacao": "situacao",
+            "Tipo_Fundo": "tipo",
+            "Patrimonio_Liquido": "patrimonio_cadastral",
+            "Data_Patrimonio_Liquido": "data_patrimonio_cadastral",
+            "Administrador": "administrador",
+            "Gestor": "gestor",
+        }
+    )
+    for coluna in ["classificacao", "classificacao_anbima", "publico_alvo"]:
+        fundos_adicionais[coluna] = ""
+
+    colunas = [
+        "cnpj",
+        "nome",
+        "situacao",
+        "tipo",
+        "classificacao",
+        "classificacao_anbima",
+        "publico_alvo",
+        "patrimonio_cadastral",
+        "data_patrimonio_cadastral",
+        "administrador",
+        "gestor",
+    ]
+    cadastro = pd.concat(
+        [classes[colunas], fundos_adicionais[colunas]],
+        ignore_index=True,
+    )
+    cadastro["cnpj"] = cadastro["cnpj"].map(normalizar_cnpj)
+    cadastro = cadastro[
+        cadastro["cnpj"].str.fullmatch(r"\d{14}")
+        & cadastro["cnpj"].ne("00000000000000")
+    ]
+    cadastro["nome"] = cadastro["nome"].fillna("Fundo sem denominação")
+    cadastro["patrimonio_cadastral"] = pd.to_numeric(
+        cadastro["patrimonio_cadastral"], errors="coerce"
+    )
+    cadastro["em_funcionamento"] = cadastro["situacao"].fillna("").str.contains(
+        "Funcionamento Normal", case=False
+    )
+    cadastro["_busca"] = (
+        cadastro["nome"].fillna("")
+        + " " + cadastro["cnpj"].fillna("")
+        + " " + cadastro["administrador"].fillna("")
+        + " " + cadastro["gestor"].fillna("")
+    ).map(normalizar_busca)
+    cadastro = cadastro.sort_values(
+        ["em_funcionamento", "patrimonio_cadastral"],
+        ascending=[False, False],
+        na_position="last",
+    ).drop_duplicates("cnpj")
+    return cadastro.reset_index(drop=True)
+
+
+def buscar_fundos_cvm(
+    cadastro: pd.DataFrame,
+    termo: str,
+    limite: int = 30,
+) -> pd.DataFrame:
+    termo_normalizado = normalizar_busca(termo).strip()
+    digitos = re.sub(r"\D", "", termo)
+    if len(digitos) >= 6:
+        mascara = cadastro["cnpj"].str.contains(digitos, regex=False)
+    else:
+        palavras = [palavra for palavra in termo_normalizado.split() if palavra]
+        mascara = pd.Series(True, index=cadastro.index)
+        for palavra in palavras:
+            mascara &= cadastro["_busca"].str.contains(palavra, regex=False)
+    return cadastro[mascara].head(limite).copy()
+
+
+@st.cache_data(ttl=86_400, show_spinner=False)
+def carregar_informe_mes_cvm(mes: str, cnpjs: tuple[str, ...]) -> pd.DataFrame:
+    nome_zip = f"inf_diario_fi_{mes}.zip"
+    arquivo = baixar_arquivo_cvm(
+        URL_INFORME_DIARIO_CVM.format(mes=mes),
+        nome_zip,
+    )
+    with zipfile.ZipFile(arquivo) as pacote:
+        nome_csv = next(
+            nome for nome in pacote.namelist() if nome.lower().endswith(".csv")
+        )
+        with pacote.open(nome_csv) as cabecalho_arquivo:
+            cabecalho = pd.read_csv(
+                cabecalho_arquivo,
+                sep=";",
+                encoding="latin1",
+                nrows=0,
+            ).columns.tolist()
+
+        coluna_cnpj = (
+            "CNPJ_FUNDO_CLASSE"
+            if "CNPJ_FUNDO_CLASSE" in cabecalho
+            else "CNPJ_FUNDO"
+        )
+        colunas_desejadas = [
+            coluna_cnpj,
+            "DT_COMPTC",
+            "VL_QUOTA",
+            "VL_PATRIM_LIQ",
+            "CAPTC_DIA",
+            "RESG_DIA",
+            "NR_COTST",
+        ]
+        colunas_existentes = [
+            coluna for coluna in colunas_desejadas if coluna in cabecalho
+        ]
+        with pacote.open(nome_csv) as dados_arquivo:
+            dados = pd.read_csv(
+                dados_arquivo,
+                sep=";",
+                encoding="latin1",
+                dtype={coluna_cnpj: str},
+                usecols=colunas_existentes,
+            )
+
+    dados["cnpj"] = dados[coluna_cnpj].map(normalizar_cnpj)
+    dados = dados[dados["cnpj"].isin(set(cnpjs))].copy()
+    dados["data"] = pd.to_datetime(dados["DT_COMPTC"], errors="coerce")
+    renomear = {
+        "VL_QUOTA": "cota",
+        "VL_PATRIM_LIQ": "patrimonio",
+        "CAPTC_DIA": "captacao_dia",
+        "RESG_DIA": "resgate_dia",
+        "NR_COTST": "cotistas",
+    }
+    dados = dados.rename(columns=renomear)
+    for coluna in renomear.values():
+        if coluna not in dados:
+            dados[coluna] = pd.NA
+        dados[coluna] = pd.to_numeric(dados[coluna], errors="coerce")
+    return dados[
+        [
+            "cnpj",
+            "data",
+            "cota",
+            "patrimonio",
+            "captacao_dia",
+            "resgate_dia",
+            "cotistas",
+        ]
+    ].sort_values(["cnpj", "data"])
+
+
+def carregar_mes_recente_fundos(cnpjs: tuple[str, ...]):
+    periodo_atual = pd.Period(date.today(), freq="M")
+    ultimo_erro = None
+    for recuo in range(4):
+        periodo = periodo_atual - recuo
+        try:
+            dados = carregar_informe_mes_cvm(periodo.strftime("%Y%m"), cnpjs)
+            if not dados.empty:
+                return periodo, dados
+        except requests.HTTPError as erro:
+            ultimo_erro = erro
+            if erro.response is None or erro.response.status_code != 404:
+                raise
+    if ultimo_erro:
+        raise RuntimeError("Não foram encontrados informes recentes para o fundo.") from ultimo_erro
+    raise RuntimeError("O fundo selecionado não possui informes recentes na CVM.")
+
+
+def ultimo_registro_por_fundo(dados: pd.DataFrame) -> pd.DataFrame:
+    return (
+        dados.dropna(subset=["data"])
+        .sort_values("data")
+        .groupby("cnpj", as_index=False)
+        .last()
+    )
+
+
+def montar_resumo_comparacao_fundos(
+    cadastro: pd.DataFrame,
+    cnpjs: tuple[str, ...],
+    meses: int,
+):
+    mes_final, dados_finais = carregar_mes_recente_fundos(cnpjs)
+    mes_inicial = mes_final - meses
+    dados_iniciais = carregar_informe_mes_cvm(
+        mes_inicial.strftime("%Y%m"),
+        cnpjs,
+    )
+    finais = ultimo_registro_por_fundo(dados_finais).rename(
+        columns={
+            "data": "data_final",
+            "cota": "cota_final",
+            "patrimonio": "patrimonio_atual",
+            "cotistas": "cotistas_atuais",
+        }
+    )
+    alvos = finais[["cnpj", "data_final"]].copy()
+    alvos["data_alvo"] = alvos["data_final"] - pd.DateOffset(months=meses)
+    iniciais = dados_iniciais.merge(
+        alvos[["cnpj", "data_alvo"]],
+        on="cnpj",
+        how="inner",
+    )
+    iniciais["distancia_data"] = (
+        iniciais["data"] - iniciais["data_alvo"]
+    ).abs()
+    iniciais = (
+        iniciais.sort_values(["cnpj", "distancia_data", "data"])
+        .groupby("cnpj", as_index=False)
+        .first()
+        .rename(columns={"data": "data_inicial", "cota": "cota_inicial"})
+    )
+    resumo = finais.merge(
+        iniciais[["cnpj", "data_inicial", "cota_inicial"]],
+        on="cnpj",
+        how="left",
+    )
+    resumo["cota_inicial"] = resumo["cota_inicial"].where(
+        resumo["cota_inicial"] > 0
+    )
+    resumo["retorno"] = resumo["cota_final"] / resumo["cota_inicial"] - 1
+    resumo["dias_periodo"] = (
+        resumo["data_final"] - resumo["data_inicial"]
+    ).dt.days
+    resumo["retorno_anualizado"] = (
+        (1 + resumo["retorno"]) ** (365.25 / resumo["dias_periodo"]) - 1
+    )
+    resumo = resumo.merge(
+        cadastro[["cnpj", "nome", "administrador", "gestor"]],
+        on="cnpj",
+        how="left",
+    )
+    return resumo, mes_inicial, mes_final
+
+
+def rotulo_fundo(registro: pd.Series) -> str:
+    nome = str(registro.get("nome", "Fundo sem denominação"))
+    return f"{nome} · {formatar_cnpj(registro.get('cnpj'))}"
+
+
+def seletor_fundo_cvm(
+    cadastro: pd.DataFrame,
+    titulo: str,
+    chave: str,
+):
+    termo = st.text_input(
+        titulo,
+        placeholder="Digite ao menos 3 letras ou parte do CNPJ",
+        key=f"{chave}_busca",
+    )
+    if len(termo.strip()) < 3:
+        return None
+    resultados = buscar_fundos_cvm(cadastro, termo)
+    if resultados.empty:
+        st.caption("Nenhum fundo encontrado.")
+        return None
+    mapa = resultados.set_index("cnpj").to_dict("index")
+    return st.selectbox(
+        f"Resultados para {titulo.lower()}",
+        options=resultados["cnpj"].tolist(),
+        format_func=lambda cnpj: rotulo_fundo(pd.Series(mapa[cnpj] | {"cnpj": cnpj})),
+        key=f"{chave}_resultado",
+    )
+
+
 def pagina_fundos():
-    cabecalho_contextual("Fundos de investimento", "Nova área")
+    cabecalho_contextual("Fundos de investimento", "Dados oficiais da CVM")
     st.markdown(
         """
         <section class="radar-hero">
             <span class="radar-hero-kicker">PESQUISA E COMPARAÇÃO</span>
             <h1>Fundos no mesmo radar.</h1>
             <p>
-                Uma área independente para pesquisar fundos, organizar pares de
-                comparação e aplicar a mesma leitura de consistência histórica.
+                Pesquise fundos e classes registrados na CVM e compare seus
+                retornos a partir das cotas informadas pelos administradores.
             </p>
         </section>
         """,
         unsafe_allow_html=True,
     )
 
+    try:
+        with st.spinner("Atualizando o cadastro oficial de fundos..."):
+            cadastro = carregar_cadastro_fundos_cvm()
+    except Exception as erro:
+        st.error("Não foi possível acessar o cadastro de fundos da CVM agora.")
+        st.caption(str(erro))
+        rodape_radar()
+        return
+
+    st.caption(
+        f"{len(cadastro):,} fundos e classes disponíveis no cadastro da CVM. "
+        "A pesquisa também considera administrador e gestor."
+    )
     aba_pesquisa, aba_comparacao = st.tabs(["Pesquisar fundos", "Comparar fundos"])
+
     with aba_pesquisa:
-        st.text_input(
+        termo = st.text_input(
             "Nome ou CNPJ do fundo",
-            placeholder="Digite o nome ou CNPJ...",
+            placeholder="Ex.: fundo DI, previdência ou 00.000.000/0001-00",
             key="pesquisa_fundo",
         )
-        st.markdown(
-            '<span class="radar-coming">Base de dados em preparação</span>',
-            unsafe_allow_html=True,
-        )
-        st.info(
-            "A navegação desta área já está separada. A próxima etapa será conectar "
-            "a base oficial da CVM para exibir resultados reais de pesquisa."
-        )
+        if len(termo.strip()) < 3:
+            st.info("Digite ao menos 3 letras do nome ou parte do CNPJ para pesquisar.")
+        else:
+            resultados = buscar_fundos_cvm(cadastro, termo)
+            if resultados.empty:
+                st.warning("Nenhum fundo foi encontrado com esse termo.")
+            else:
+                mapa_resultados = resultados.set_index("cnpj").to_dict("index")
+                cnpj_escolhido = st.selectbox(
+                    "Resultados encontrados",
+                    options=resultados["cnpj"].tolist(),
+                    format_func=lambda cnpj: rotulo_fundo(
+                        pd.Series(mapa_resultados[cnpj] | {"cnpj": cnpj})
+                    ),
+                    key="fundo_pesquisa_resultado",
+                )
+                fundo = cadastro[cadastro["cnpj"] == cnpj_escolhido].iloc[0]
+                st.markdown(f"### {fundo['nome']}")
+                st.caption(formatar_cnpj(cnpj_escolhido))
+                coluna_status, coluna_tipo, coluna_pl = st.columns(3)
+                coluna_status.metric("Situação", fundo.get("situacao") or "Não informada")
+                coluna_tipo.metric("Tipo", fundo.get("tipo") or "Não informado")
+                coluna_pl.metric(
+                    "Patrimônio cadastral",
+                    formatar_reais(fundo.get("patrimonio_cadastral")),
+                )
+                detalhes = pd.DataFrame(
+                    {
+                        "Campo": [
+                            "Administrador",
+                            "Gestor",
+                            "Classificação",
+                            "Classificação ANBIMA",
+                            "Público-alvo",
+                        ],
+                        "Informação": [
+                            fundo.get("administrador") or "—",
+                            fundo.get("gestor") or "—",
+                            fundo.get("classificacao") or "—",
+                            fundo.get("classificacao_anbima") or "—",
+                            fundo.get("publico_alvo") or "—",
+                        ],
+                    }
+                )
+                st.dataframe(detalhes, hide_index=True, width="stretch")
+
+                if st.button("Carregar último informe diário", type="primary"):
+                    st.session_state["detalhe_fundo_cvm"] = cnpj_escolhido
+                if st.session_state.get("detalhe_fundo_cvm") == cnpj_escolhido:
+                    try:
+                        with st.spinner("Consultando o informe diário na CVM..."):
+                            _, dados_recentes = carregar_mes_recente_fundos(
+                                (cnpj_escolhido,)
+                            )
+                        atual = ultimo_registro_por_fundo(dados_recentes).iloc[0]
+                        st.markdown("#### Última informação disponível")
+                        coluna_data, coluna_cota, coluna_pl_atual, coluna_cotistas = st.columns(4)
+                        coluna_data.metric("Data", atual["data"].strftime("%d/%m/%Y"))
+                        coluna_cota.metric("Cota", f"{atual['cota']:.6f}")
+                        coluna_pl_atual.metric(
+                            "Patrimônio líquido", formatar_reais(atual["patrimonio"])
+                        )
+                        coluna_cotistas.metric(
+                            "Cotistas",
+                            f"{atual['cotistas']:,.0f}".replace(",", "."),
+                        )
+                    except Exception as erro:
+                        st.warning("Não foi encontrado um informe diário recente para este fundo.")
+                        st.caption(str(erro))
 
     with aba_comparacao:
-        coluna_a, coluna_b = st.columns(2)
-        coluna_a.text_input("Fundo principal", placeholder="Nome ou CNPJ", key="fundo_a")
-        coluna_b.text_input("Fundo de comparação", placeholder="Nome ou CNPJ", key="fundo_b")
-        st.button("Montar comparação", disabled=True, width="stretch")
-        st.caption(
-            "Nesta etapa entraremos com cota, retorno, volatilidade, patrimônio e "
-            "janelas móveis dos fundos selecionados."
+        st.write(
+            "Pesquise dois fundos. O retorno é calculado pela variação das cotas "
+            "entre os fechamentos mensais disponíveis."
         )
+        coluna_a, coluna_b = st.columns(2)
+        with coluna_a:
+            cnpj_a = seletor_fundo_cvm(cadastro, "Fundo principal", "fundo_a")
+        with coluna_b:
+            cnpj_b = seletor_fundo_cvm(cadastro, "Fundo de comparação", "fundo_b")
+
+        opcoes_prazo = {
+            "6 meses": 6,
+            "12 meses": 12,
+            "2 anos": 24,
+            "3 anos": 36,
+            "5 anos": 60,
+        }
+        prazo_fundos = st.selectbox(
+            "Período da comparação",
+            options=list(opcoes_prazo),
+            index=1,
+        )
+        cnpjs_validos = tuple(
+            dict.fromkeys(cnpj for cnpj in [cnpj_a, cnpj_b] if cnpj)
+        )
+        comparar = st.button(
+            "Comparar fundos",
+            type="primary",
+            width="stretch",
+            disabled=len(cnpjs_validos) != 2,
+        )
+        if comparar:
+            st.session_state["comparacao_fundos_cvm"] = (
+                cnpjs_validos,
+                opcoes_prazo[prazo_fundos],
+            )
+
+        configuracao = st.session_state.get("comparacao_fundos_cvm")
+        if configuracao and configuracao == (
+            cnpjs_validos,
+            opcoes_prazo[prazo_fundos],
+        ):
+            try:
+                with st.spinner(
+                    "Baixando os dois fechamentos necessários e calculando os retornos..."
+                ):
+                    resumo, mes_inicial, mes_final = montar_resumo_comparacao_fundos(
+                        cadastro,
+                        cnpjs_validos,
+                        opcoes_prazo[prazo_fundos],
+                    )
+                if resumo["retorno"].isna().any():
+                    st.warning(
+                        "Um dos fundos não possui cota nos dois extremos do período "
+                        "selecionado. Tente um prazo menor."
+                    )
+                else:
+                    colunas_retorno = st.columns(len(resumo))
+                    for coluna, (_, linha) in zip(colunas_retorno, resumo.iterrows()):
+                        coluna.metric(
+                            linha["nome"],
+                            f"{linha['retorno']:.2%}",
+                            f"{linha['retorno_anualizado']:.2%} a.a.",
+                            delta_color="off",
+                        )
+
+                    grafico = go.Figure(
+                        go.Bar(
+                            x=resumo["nome"],
+                            y=resumo["retorno"] * 100,
+                            marker_color=["#1769e0", "#19c2d8"],
+                            text=[f"{valor:.2%}" for valor in resumo["retorno"]],
+                            textposition="outside",
+                            hovertemplate="%{x}<br>Retorno: %{y:.2f}%<extra></extra>",
+                        )
+                    )
+                    grafico.update_layout(
+                        title=f"Retorno acumulado · {prazo_fundos}",
+                        height=420,
+                        margin={"l": 20, "r": 20, "t": 65, "b": 110},
+                        plot_bgcolor="white",
+                        paper_bgcolor="white",
+                        showlegend=False,
+                    )
+                    grafico.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0")
+                    grafico.update_xaxes(tickangle=-10)
+                    st.plotly_chart(
+                        grafico,
+                        width="stretch",
+                        config={"displayModeBar": False, "displaylogo": False},
+                    )
+
+                    tabela = resumo[
+                        [
+                            "nome",
+                            "data_inicial",
+                            "data_final",
+                            "retorno",
+                            "retorno_anualizado",
+                            "patrimonio_atual",
+                            "cotistas_atuais",
+                        ]
+                    ].copy()
+                    tabela.columns = [
+                        "Fundo",
+                        "Data inicial",
+                        "Data final",
+                        "Retorno acumulado",
+                        "Retorno anualizado",
+                        "Patrimônio atual",
+                        "Cotistas",
+                    ]
+                    st.dataframe(
+                        tabela,
+                        hide_index=True,
+                        width="stretch",
+                        column_config={
+                            "Data inicial": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                            "Data final": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                            "Retorno acumulado": st.column_config.NumberColumn(format="percent"),
+                            "Retorno anualizado": st.column_config.NumberColumn(format="percent"),
+                            "Patrimônio atual": st.column_config.NumberColumn(format="R$ %.2f"),
+                            "Cotistas": st.column_config.NumberColumn(format="localized"),
+                        },
+                    )
+                    st.caption(
+                        f"Período de referência: {mes_inicial.strftime('%m/%Y')} a "
+                        f"{mes_final.strftime('%m/%Y')}. Retorno pela variação da cota, "
+                        "sem impostos ou custos individuais do cotista."
+                    )
+            except requests.HTTPError as erro:
+                st.error("A CVM não disponibilizou um dos meses necessários agora.")
+                st.caption(str(erro))
+            except Exception as erro:
+                st.error("Não foi possível concluir a comparação dos fundos.")
+                st.caption(str(erro))
+
+    st.markdown(
+        "Fonte: [Portal de Dados Abertos da CVM]"
+        "(https://dados.cvm.gov.br/dataset/fi-doc-inf_diario). "
+        "As informações são reportadas pelos administradores dos fundos."
+    )
     rodape_radar()
 
 
