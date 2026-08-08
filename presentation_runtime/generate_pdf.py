@@ -279,7 +279,7 @@ bullets = [
     f"O histórico exibido cobre {data['parameters']['historyYears']} anos e contém janelas mensais sobrepostas.",
     "Retornos são brutos e não consideram impostos, taxas, custos ou condições específicas de produtos.",
     "Resultados históricos não representam garantia de rentabilidade futura.",
-    "S&P 500 usa o índice de preços em USD; S&P 500 + IPCA é uma combinação teórica dos fatores mensais.",
+    "No S&P 500, a participação multiplica ganhos e perdas mensais; na combinação com IPCA, a inflação permanece integral.",
 ]
 for index, bullet in enumerate(bullets):
     draw_wrapped(

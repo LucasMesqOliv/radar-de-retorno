@@ -139,13 +139,16 @@ def nomes_series(
     taxa_ipca: float,
     taxa_prefixada: float,
     taxa_referencia: float,
+    participacao_sp500: float,
 ) -> dict[str, str]:
     return {
         "cdi": "CDI",
         "ipca": f"IPCA + {taxa_ipca:.2f}%",
         "prefixado": f"Prefixado {taxa_prefixada:.2f}% a.a.",
-        "sp500": "S&P 500 (USD, preço)",
-        "sp500_ipca": "S&P 500 + IPCA",
+        "sp500": (
+            f"S&P 500 ({participacao_sp500:.0f}% de participação, USD, preço)"
+        ),
+        "sp500_ipca": f"S&P 500 ({participacao_sp500:.0f}%) + IPCA",
         "referencia": f"Referência {taxa_referencia:.2f}% a.a.",
     }
 
@@ -167,6 +170,7 @@ def construir_indices(
     taxa_ipca: float,
     taxa_prefixada: float,
     taxa_referencia: float,
+    participacao_sp500: float,
 ) -> pd.DataFrame:
     taxa_real_mensal = (1 + taxa_ipca / 100) ** (1 / 12) - 1
     taxa_prefixada_mensal = (1 + taxa_prefixada / 100) ** (1 / 12) - 1
@@ -197,8 +201,15 @@ def construir_indices(
     base["indice_referencia"] = (
         (1 + taxa_referencia_mensal) ** pd.Series(range(len(base)), index=base.index)
     ) * 100
+    retorno_sp500 = base["indice_sp500"].pct_change().fillna(0)
+    base["indice_sp500"] = (
+        1 + retorno_sp500 * participacao_sp500 / 100
+    ).cumprod() * 100
+    indice_inflacao_rebaseado = (
+        base["indice_inflacao"] / base["indice_inflacao"].iloc[0] * 100
+    )
     base["indice_sp500_ipca"] = (
-        base["indice_sp500"] * base["indice_inflacao"] / 100
+        base["indice_sp500"] * indice_inflacao_rebaseado / 100
     )
     base["data"] = base["mes"].dt.to_timestamp("M")
     return base
@@ -211,6 +222,7 @@ def analisar_janelas(
     taxa_ipca: float,
     taxa_prefixada: float,
     taxa_referencia: float,
+    participacao_sp500: float,
     prazo_anos: int,
     historico_anos: int,
 ) -> pd.DataFrame:
@@ -222,6 +234,7 @@ def analisar_janelas(
         taxa_ipca,
         taxa_prefixada,
         taxa_referencia,
+        participacao_sp500,
     )
 
     for codigo, coluna_indice in COLUNAS_INDICES.items():
@@ -647,6 +660,20 @@ with st.sidebar:
         taxa_prefixada = st.number_input(
             "Taxa prefixada (% a.a.)", 0.0, 30.0, 12.0, 0.25
         )
+    participacao_sp500 = 100.0
+    if any(codigo in selecoes for codigo in {"sp500", "sp500_ipca"}):
+        participacao_sp500 = st.number_input(
+            "Participação no S&P 500 (%)",
+            min_value=0.0,
+            max_value=300.0,
+            value=100.0,
+            step=10.0,
+            help=(
+                "Multiplica cada retorno mensal do S&P 500. Exemplo: com "
+                "participação de 120%, um mês de +5% vira +6% e um mês de "
+                "-5% vira -6%."
+            ),
+        )
 
     usar_referencia = st.checkbox("Adicionar taxa de referência", value=False)
     taxa_referencia = 12.0
@@ -657,7 +684,12 @@ with st.sidebar:
 
     prazo_anos = st.selectbox("Prazo da janela", [1, 3, 5, 10], index=2)
     historico_anos = st.selectbox("Histórico exibido", [5, 10, 15, 20], index=2)
-    nomes = nomes_series(taxa_ipca, taxa_prefixada, taxa_referencia)
+    nomes = nomes_series(
+        taxa_ipca,
+        taxa_prefixada,
+        taxa_referencia,
+        participacao_sp500,
+    )
     st.caption("CDI e IPCA: BCB. S&P 500: Yahoo Finance (^GSPC).")
 
 series_comparativas_finais = series_comparativas.copy()
@@ -678,6 +710,7 @@ try:
             taxa_ipca,
             taxa_prefixada,
             taxa_referencia,
+            participacao_sp500,
             prazo_anos,
             historico_anos,
         )
@@ -688,6 +721,7 @@ try:
             taxa_ipca,
             taxa_prefixada,
             taxa_referencia,
+            participacao_sp500,
         )
 
     series_escolhidas = [serie_principal] + series_comparativas_finais
