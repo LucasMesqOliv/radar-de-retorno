@@ -2943,10 +2943,12 @@ def criar_tabela_estatisticas(
     analise: pd.DataFrame,
     series_escolhidas: list[str],
     nomes: dict[str, str],
+    acumulado: bool = False,
 ) -> pd.DataFrame:
     linhas = []
     for codigo in series_escolhidas:
-        serie = analise[codigo]
+        coluna_retorno = f"{codigo}_acumulado" if acumulado else codigo
+        serie = analise[coluna_retorno]
         indice_pior = serie.idxmin()
         indice_melhor = serie.idxmax()
         constante = serie.nunique() == 1
@@ -3306,9 +3308,11 @@ try:
 
     st.subheader("Melhores e piores janelas")
     st.caption(
-        "Os retornos são anualizados. As datas indicam o mês de encerramento "
-        "de cada janela."
+        "A primeira tabela mostra os retornos anualizados. As datas indicam o mês "
+        "de encerramento de cada janela."
     )
+    if visualizacao_janelas == "Acumulado em linhas":
+        st.markdown("**Retornos anualizados**")
     st.dataframe(
         criar_tabela_estatisticas(analise, series_escolhidas, nomes),
         hide_index=True,
@@ -3324,6 +3328,33 @@ try:
             "Final da melhor janela": st.column_config.TextColumn(width="medium"),
         },
     )
+
+    if visualizacao_janelas == "Acumulado em linhas":
+        st.markdown("**Retornos acumulados da janela**")
+        st.caption(
+            f"Retorno total obtido ao longo de cada janela de {prazo_anos} anos, "
+            "sem anualização."
+        )
+        st.dataframe(
+            criar_tabela_estatisticas(
+                analise,
+                series_escolhidas,
+                nomes,
+                acumulado=True,
+            ),
+            hide_index=True,
+            width=1050,
+            height=min(190, 48 + 32 * len(series_escolhidas)),
+            row_height=32,
+            column_config={
+                "Referência": st.column_config.TextColumn(width="medium"),
+                "Pior retorno": st.column_config.TextColumn(width="small"),
+                "Final da pior janela": st.column_config.TextColumn(width="medium"),
+                "Retorno mediano": st.column_config.TextColumn(width="small"),
+                "Melhor retorno": st.column_config.TextColumn(width="small"),
+                "Final da melhor janela": st.column_config.TextColumn(width="medium"),
+            },
+        )
 
     st.subheader("Desempenho no período")
     st.caption(
