@@ -30,3 +30,25 @@ python scripts/preparar_base.py
 ```
 
 Fontes: SGS/BCB, Yahoo Finance (`^GSPC`) e informes diários da CVM.
+
+## Base de dados permanente
+
+O aplicativo também aceita PostgreSQL. Quando a chave `DATABASE_URL` está
+configurada nos secrets do Streamlit, os índices e fundos novos são gravados
+no banco online e sobrevivem às reinicializações do site. Sem essa chave, o
+SQLite local continua sendo usado automaticamente.
+
+Exemplo de configuração:
+
+```toml
+DATABASE_URL = "postgresql://usuario:senha@servidor:5432/banco?sslmode=require"
+```
+
+Depois de configurar a conexão, copie os dados atuais do SQLite para o banco
+permanente executando:
+
+```powershell
+python scripts/migrar_para_postgres.py
+```
+
+O endereço do banco é uma credencial e nunca deve ser salvo no GitHub.

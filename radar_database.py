@@ -1,7 +1,8 @@
-"""Camada SQLite do Radar de Retorno.
+"""Camada de dados do Radar de Retorno.
 
-O banco funciona como cache persistente e pode ser substituído no futuro por
-PostgreSQL sem alterar as regras de cálculo da aplicação.
+Usa PostgreSQL quando ``DATABASE_URL`` está configurada e mantém o SQLite
+local como fallback. Assim, o site continua funcionando localmente e passa a
+preservar novos dados entre reinicializações quando conectado ao banco online.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sqlite3
+from threading import Lock
 
 import pandas as pd
 
@@ -25,6 +27,19 @@ COLUNAS_COTAS = [
     "cotistas",
 ]
 
+_POOL_POSTGRES = None
+_LOCK_POOL = Lock()
+_LOCK_SCHEMA = Lock()
+_SCHEMAS_INICIALIZADOS: set[str] = set()
+
+
+def url_banco_remoto() -> str:
+    return os.environ.get("DATABASE_URL", "").strip()
+
+
+def backend_banco() -> str:
+    return "postgresql" if url_banco_remoto() else "sqlite"
+
 
 def caminho_banco() -> Path:
     configurado = os.environ.get("RADAR_DB_PATH", "").strip()
@@ -36,51 +51,122 @@ def caminho_banco() -> Path:
     return caminho
 
 
+def _pool_postgres():
+    global _POOL_POSTGRES
+    if _POOL_POSTGRES is None:
+        with _LOCK_POOL:
+            if _POOL_POSTGRES is None:
+                from psycopg_pool import ConnectionPool
+
+                _POOL_POSTGRES = ConnectionPool(
+                    conninfo=url_banco_remoto(),
+                    min_size=1,
+                    max_size=5,
+                    timeout=30,
+                    kwargs={"connect_timeout": 15},
+                )
+    return _POOL_POSTGRES
+
+
+def _sql(comando: str) -> str:
+    return comando.replace("?", "%s") if backend_banco() == "postgresql" else comando
+
+
+def _executar(banco, comando: str, parametros=()):
+    cursor = banco.cursor()
+    cursor.execute(_sql(comando), parametros)
+    return cursor
+
+
+def _executar_muitos(banco, comando: str, linhas) -> None:
+    cursor = banco.cursor()
+    try:
+        cursor.executemany(_sql(comando), linhas)
+    finally:
+        cursor.close()
+
+
+def _ler_dataframe(banco, comando: str, parametros, colunas: list[str]) -> pd.DataFrame:
+    cursor = _executar(banco, comando, parametros)
+    try:
+        return pd.DataFrame(cursor.fetchall(), columns=colunas)
+    finally:
+        cursor.close()
+
+
+def _garantir_schema(banco) -> None:
+    backend = backend_banco()
+    if backend in _SCHEMAS_INICIALIZADOS:
+        return
+    with _LOCK_SCHEMA:
+        if backend not in _SCHEMAS_INICIALIZADOS:
+            inicializar(banco)
+            banco.commit()
+            _SCHEMAS_INICIALIZADOS.add(backend)
+
+
 @contextmanager
 def conexao():
+    if backend_banco() == "postgresql":
+        with _pool_postgres().connection() as banco:
+            _garantir_schema(banco)
+            try:
+                yield banco
+                banco.commit()
+            except Exception:
+                banco.rollback()
+                raise
+        return
+
     banco = sqlite3.connect(caminho_banco(), timeout=30)
     try:
         banco.execute("PRAGMA journal_mode=WAL")
         banco.execute("PRAGMA synchronous=NORMAL")
         banco.execute("PRAGMA busy_timeout=30000")
-        inicializar(banco)
+        _garantir_schema(banco)
         yield banco
         banco.commit()
+    except Exception:
+        banco.rollback()
+        raise
     finally:
         banco.close()
 
 
-def inicializar(banco: sqlite3.Connection) -> None:
-    banco.execute(
+def inicializar(banco) -> None:
+    _executar(
+        banco,
         """
         CREATE TABLE IF NOT EXISTS series_mercado (
             codigo TEXT NOT NULL,
             data TEXT NOT NULL,
-            valor REAL NOT NULL,
+            valor DOUBLE PRECISION NOT NULL,
             atualizado_em TEXT NOT NULL,
             PRIMARY KEY (codigo, data)
         )
         """
-    )
-    banco.execute(
+    ).close()
+    _executar(
+        banco,
         """
         CREATE TABLE IF NOT EXISTS cotas_fundos (
             cnpj TEXT NOT NULL,
             data TEXT NOT NULL,
-            cota REAL NOT NULL,
-            patrimonio REAL,
-            captacao_dia REAL,
-            resgate_dia REAL,
-            cotistas REAL,
+            cota DOUBLE PRECISION NOT NULL,
+            patrimonio DOUBLE PRECISION,
+            captacao_dia DOUBLE PRECISION,
+            resgate_dia DOUBLE PRECISION,
+            cotistas DOUBLE PRECISION,
             atualizado_em TEXT NOT NULL,
             PRIMARY KEY (cnpj, data)
         )
         """
-    )
+    ).close()
     # A chave primária composta já cria o índice usado nas consultas por fundo
     # e intervalo; um segundo índice idêntico só aumentaria o arquivo.
-    banco.execute("DROP INDEX IF EXISTS idx_cotas_fundos_cnpj_data")
-    banco.execute(
+    _executar(banco, "DROP INDEX IF EXISTS idx_cotas_fundos_cnpj_data").close()
+    _executar(
+        banco,
         """
         CREATE TABLE IF NOT EXISTS periodos_consultados (
             tipo TEXT NOT NULL,
@@ -91,15 +177,16 @@ def inicializar(banco: sqlite3.Connection) -> None:
             PRIMARY KEY (tipo, identificador, periodo)
         )
         """
-    )
+    ).close()
 
 
 def carregar_serie_mercado(codigo: str) -> pd.DataFrame:
     with conexao() as banco:
-        dados = pd.read_sql_query(
-            "SELECT data, valor FROM series_mercado WHERE codigo = ? ORDER BY data",
+        dados = _ler_dataframe(
             banco,
-            params=(codigo,),
+            "SELECT data, valor FROM series_mercado WHERE codigo = ? ORDER BY data",
+            (codigo,),
+            ["data", "valor"],
         )
     if dados.empty:
         return pd.DataFrame(columns=["data", "valor"])
@@ -118,7 +205,8 @@ def salvar_serie_mercado(codigo: str, dados: pd.DataFrame) -> None:
         if pd.notna(data) and pd.notna(valor)
     ]
     with conexao() as banco:
-        banco.executemany(
+        _executar_muitos(
+            banco,
             """
             INSERT INTO series_mercado (codigo, data, valor, atualizado_em)
             VALUES (?, ?, ?, ?)
@@ -134,10 +222,13 @@ def serie_mercado_atualizada_recentemente(
     codigo: str, validade_segundos: int = 86_400
 ) -> bool:
     with conexao() as banco:
-        resultado = banco.execute(
+        cursor = _executar(
+            banco,
             "SELECT MAX(atualizado_em) FROM series_mercado WHERE codigo = ?",
             (codigo,),
-        ).fetchone()
+        )
+        resultado = cursor.fetchone()
+        cursor.close()
     if not resultado or not resultado[0]:
         return False
     atualizado_em = datetime.fromisoformat(resultado[0])
@@ -153,15 +244,16 @@ def carregar_cotas(
     marcadores = ",".join("?" for _ in cnpjs)
     parametros = (*cnpjs, data_inicial, data_final)
     with conexao() as banco:
-        dados = pd.read_sql_query(
+        dados = _ler_dataframe(
+            banco,
             f"""
             SELECT cnpj, data, cota, patrimonio, captacao_dia, resgate_dia, cotistas
             FROM cotas_fundos
             WHERE cnpj IN ({marcadores}) AND data BETWEEN ? AND ?
             ORDER BY cnpj, data
             """,
-            banco,
-            params=parametros,
+            parametros,
+            COLUNAS_COTAS,
         )
     if dados.empty:
         return pd.DataFrame(columns=COLUNAS_COTAS)
@@ -199,7 +291,8 @@ def salvar_cotas(dados: pd.DataFrame) -> None:
             )
         )
     with conexao() as banco:
-        banco.executemany(
+        _executar_muitos(
+            banco,
             """
             INSERT INTO cotas_fundos (
                 cnpj, data, cota, patrimonio, captacao_dia, resgate_dia,
@@ -224,13 +317,16 @@ def periodo_foi_consultado(
     validade_segundos: int | None = None,
 ) -> bool:
     with conexao() as banco:
-        resultado = banco.execute(
+        cursor = _executar(
+            banco,
             """
             SELECT consultado_em FROM periodos_consultados
             WHERE tipo = ? AND identificador = ? AND periodo = ?
             """,
             (tipo, identificador, periodo),
-        ).fetchone()
+        )
+        resultado = cursor.fetchone()
+        cursor.close()
     if resultado is None:
         return False
     if validade_segundos is None:
@@ -244,7 +340,8 @@ def registrar_periodo(
     tipo: str, identificador: str, periodo: str, possui_dados: bool
 ) -> None:
     with conexao() as banco:
-        banco.execute(
+        _executar(
+            banco,
             """
             INSERT INTO periodos_consultados (
                 tipo, identificador, periodo, possui_dados, consultado_em
@@ -260,9 +357,10 @@ def registrar_periodo(
                 int(possui_dados),
                 datetime.now(timezone.utc).isoformat(),
             ),
-        )
+        ).close()
 
 
 def otimizar() -> None:
-    with conexao() as banco:
-        banco.execute("PRAGMA optimize")
+    if backend_banco() == "sqlite":
+        with conexao() as banco:
+            _executar(banco, "PRAGMA optimize").close()
