@@ -4,3 +4,7 @@ __pycache__/
 presentation_runtime/__pycache__/
 presentation_runtime/node_modules/
 presentation_runtime/qa_temp/
+data/*.db-wal
+data/*.db-shm
+streamlit-*.log
+.radar_runtime/

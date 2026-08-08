@@ -7,6 +7,7 @@ import io
 import json
 from pathlib import Path
 import re
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,16 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+
+from radar_database import (
+    carregar_cotas,
+    carregar_serie_mercado,
+    periodo_foi_consultado,
+    registrar_periodo,
+    salvar_cotas,
+    salvar_serie_mercado,
+    serie_mercado_atualizada_recentemente,
+)
 
 
 st.set_page_config(
@@ -96,6 +107,21 @@ def aplicar_identidade_visual():
         [data-testid="stSidebar"] [data-baseweb="input"] > div {
             background: rgba(255,255,255,.09) !important;
             border-color: rgba(255,255,255,.20) !important;
+        }
+
+        [data-testid="stSidebar"] input,
+        [data-testid="stSidebar"] input[type="number"] {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+            caret-color: #72e6f3 !important;
+            font-weight: 700 !important;
+            opacity: 1 !important;
+        }
+
+        [data-testid="stSidebar"] input::placeholder {
+            color: #b9c8dc !important;
+            -webkit-text-fill-color: #b9c8dc !important;
+            opacity: 1 !important;
         }
 
         [data-testid="stSidebar"] [role="radiogroup"] label {
@@ -705,6 +731,17 @@ def carregar_informe_mes_cvm(mes: str, cnpjs: tuple[str, ...]) -> pd.DataFrame:
     else:
         validade = 31_536_000
 
+    inicio_periodo = periodo_arquivo.start_time.strftime("%Y-%m-%d")
+    fim_periodo = periodo_arquivo.end_time.strftime("%Y-%m-%d")
+    validade_consulta = validade if idade_meses <= 1 else None
+    if all(
+        periodo_foi_consultado(
+            "mes", cnpj, mes, validade_segundos=validade_consulta
+        )
+        for cnpj in cnpjs
+    ):
+        return carregar_cotas(cnpjs, inicio_periodo, fim_periodo)
+
     pasta_series = Path(tempfile.gettempdir()) / "radar_retorno_cvm" / "series_fundos"
     pasta_series.mkdir(parents=True, exist_ok=True)
     arquivos_series = {
@@ -721,7 +758,15 @@ def carregar_informe_mes_cvm(mes: str, cnpjs: tuple[str, ...]) -> pd.DataFrame:
 
     if not faltantes:
         partes_cache = [pd.read_pickle(arquivos_series[cnpj]) for cnpj in cnpjs]
-        return pd.concat(partes_cache, ignore_index=True).sort_values(["cnpj", "data"])
+        resultado = pd.concat(partes_cache, ignore_index=True).sort_values(
+            ["cnpj", "data"]
+        )
+        salvar_cotas(resultado)
+        for cnpj in cnpjs:
+            registrar_periodo(
+                "mes", cnpj, mes, not resultado[resultado["cnpj"].eq(cnpj)].empty
+            )
+        return resultado
 
     arquivo = baixar_arquivo_cvm(
         URL_INFORME_DIARIO_CVM.format(mes=mes),
@@ -801,7 +846,13 @@ def carregar_informe_mes_cvm(mes: str, cnpjs: tuple[str, ...]) -> pd.DataFrame:
         temporario.replace(arquivos_series[cnpj])
 
     partes_cache = [pd.read_pickle(arquivos_series[cnpj]) for cnpj in cnpjs]
-    return pd.concat(partes_cache, ignore_index=True).sort_values(["cnpj", "data"])
+    resultado = pd.concat(partes_cache, ignore_index=True).sort_values(["cnpj", "data"])
+    salvar_cotas(resultado)
+    for cnpj in cnpjs:
+        registrar_periodo(
+            "mes", cnpj, mes, not resultado[resultado["cnpj"].eq(cnpj)].empty
+        )
+    return resultado
 
 
 @st.cache_data(ttl=86_400, show_spinner=False)
@@ -884,6 +935,8 @@ def carregar_informe_ano_cvm(ano: int, cnpjs: tuple[str, ...]) -> pd.DataFrame:
         "cnpj", "data", "cota", "patrimonio",
         "captacao_dia", "resgate_dia", "cotistas",
     ]
+    if all(periodo_foi_consultado("ano", cnpj, str(ano)) for cnpj in cnpjs):
+        return carregar_cotas(cnpjs, f"{ano}-01-01", f"{ano}-12-31")
     pasta_series = Path(tempfile.gettempdir()) / "radar_retorno_cvm" / "series_fundos"
     pasta_series.mkdir(parents=True, exist_ok=True)
     arquivos_series = {
@@ -955,7 +1008,13 @@ def carregar_informe_ano_cvm(ano: int, cnpjs: tuple[str, ...]) -> pd.DataFrame:
             temporario.replace(arquivos_series[cnpj])
 
     partes_cache = [pd.read_pickle(arquivos_series[cnpj]) for cnpj in cnpjs]
-    return pd.concat(partes_cache, ignore_index=True).sort_values(["cnpj", "data"])
+    resultado = pd.concat(partes_cache, ignore_index=True).sort_values(["cnpj", "data"])
+    salvar_cotas(resultado)
+    for cnpj in cnpjs:
+        registrar_periodo(
+            "ano", cnpj, str(ano), not resultado[resultado["cnpj"].eq(cnpj)].empty
+        )
+    return resultado
 
 
 @st.cache_data(ttl=86_400, show_spinner=False)
@@ -2401,11 +2460,20 @@ if pagina_atual == "Fundos":
 
 @st.cache_data(ttl=86_400, show_spinner=False)
 def baixar_serie_bcb(codigo: int, ano_inicial: int) -> pd.DataFrame:
-    """Baixa uma série do SGS/BCB em blocos anuais."""
+    """Lê o SGS do banco local e busca no BCB somente o trecho novo."""
+    codigo_banco = f"BCB_{codigo}"
+    armazenados = carregar_serie_mercado(codigo_banco)
+    if not armazenados.empty and serie_mercado_atualizada_recentemente(codigo_banco):
+        return armazenados.sort_values("data")
+    primeiro_ano = (
+        ano_inicial
+        if armazenados.empty
+        else max(ano_inicial, armazenados["data"].max().year)
+    )
     partes = []
     url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{codigo}/dados"
 
-    for ano in range(ano_inicial, date.today().year + 1):
+    for ano in range(primeiro_ano, date.today().year + 1):
         for tentativa in range(5):
             try:
                 resposta = requests.get(
@@ -2422,6 +2490,8 @@ def baixar_serie_bcb(codigo: int, ano_inicial: int) -> pd.DataFrame:
                 break
             except requests.RequestException:
                 if tentativa == 4:
+                    if not armazenados.empty:
+                        return armazenados.sort_values("data")
                     raise
                 time.sleep(2 ** tentativa)
 
@@ -2429,45 +2499,69 @@ def baixar_serie_bcb(codigo: int, ano_inicial: int) -> pd.DataFrame:
         if not parte.empty:
             partes.append(parte)
 
-    if not partes:
+    if not partes and armazenados.empty:
         raise RuntimeError("O Banco Central não retornou dados para a série.")
-
-    dados = pd.concat(partes, ignore_index=True)
-    dados["data"] = pd.to_datetime(dados["data"], dayfirst=True)
-    dados["valor"] = pd.to_numeric(
-        dados["valor"].astype(str).str.replace(",", "."),
-        errors="coerce",
-    )
-    return dados.dropna(subset=["valor"]).sort_values("data")
+    if partes:
+        novos = pd.concat(partes, ignore_index=True)
+        novos["data"] = pd.to_datetime(novos["data"], dayfirst=True)
+        novos["valor"] = pd.to_numeric(
+            novos["valor"].astype(str).str.replace(",", "."),
+            errors="coerce",
+        )
+        novos = novos.dropna(subset=["data", "valor"])
+        salvar_serie_mercado(codigo_banco, novos)
+    return carregar_serie_mercado(codigo_banco).sort_values("data")
 
 
 @st.cache_data(ttl=86_400, show_spinner=False)
 def baixar_sp500(ano_inicial: int) -> pd.DataFrame:
-    """Baixa o índice de preços S&P 500 (^GSPC), em USD e sem dividendos."""
-    inicio = datetime(ano_inicial, 1, 1, tzinfo=timezone.utc)
+    """Lê o S&P 500 local e atualiza somente os meses mais recentes."""
+    codigo_banco = "YAHOO_GSPC_MENSAL"
+    armazenados = carregar_serie_mercado(codigo_banco)
+    if not armazenados.empty and serie_mercado_atualizada_recentemente(codigo_banco):
+        dados = armazenados.rename(columns={"valor": "indice_sp500"})
+        dados["mes"] = dados["data"].dt.to_period("M")
+        return dados.groupby("mes", as_index=False).last()
+    if armazenados.empty:
+        inicio = datetime(ano_inicial, 1, 1, tzinfo=timezone.utc)
+    else:
+        inicio = (
+            armazenados["data"].max() - pd.DateOffset(months=2)
+        ).to_pydatetime().replace(tzinfo=timezone.utc)
     fim = datetime.now(timezone.utc) + timedelta(days=1)
-    resposta = requests.get(
-        "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC",
-        params={
-            "period1": int(inicio.timestamp()),
-            "period2": int(fim.timestamp()),
-            "interval": "1mo",
-            "events": "history",
-            "includeAdjustedClose": "false",
-        },
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=30,
-    )
-    resposta.raise_for_status()
+    try:
+        resposta = requests.get(
+            "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC",
+            params={
+                "period1": int(inicio.timestamp()),
+                "period2": int(fim.timestamp()),
+                "interval": "1mo",
+                "events": "history",
+                "includeAdjustedClose": "false",
+            },
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=30,
+        )
+        resposta.raise_for_status()
+    except requests.RequestException:
+        if armazenados.empty:
+            raise
+        dados = armazenados.rename(columns={"valor": "indice_sp500"})
+        dados["mes"] = dados["data"].dt.to_period("M")
+        return dados.groupby("mes", as_index=False).last()
     resultado = resposta.json()["chart"]["result"][0]
     fechamentos = resultado["indicators"]["quote"][0]["close"]
-    dados = pd.DataFrame(
+    novos = pd.DataFrame(
         {
             "data": pd.to_datetime(resultado["timestamp"], unit="s", utc=True)
             .tz_convert(None),
-            "indice_sp500": fechamentos,
+            "valor": fechamentos,
         }
     ).dropna()
+    salvar_serie_mercado(codigo_banco, novos)
+    dados = carregar_serie_mercado(codigo_banco).rename(
+        columns={"valor": "indice_sp500"}
+    )
     dados["mes"] = dados["data"].dt.to_period("M")
     return dados.groupby("mes", as_index=False).last()
 
@@ -2796,6 +2890,65 @@ def criar_grafico_periodo(
     return fig
 
 
+def criar_grafico_barras_periodo(
+    resultados: dict,
+    series_escolhidas: list[str],
+    nomes: dict[str, str],
+    rotulo_periodo: str,
+):
+    """Compara o retorno acumulado do intervalo em barras."""
+    cores = {
+        "cdi": "#1769E0",
+        "ipca": "#19A974",
+        "prefixado": "#FF6B4A",
+        "sp500": "#7A4EAB",
+        "sp500_ipca": "#D47A22",
+        "referencia": "#667085",
+    }
+    valores = [resultados[codigo]["acumulado"] * 100 for codigo in series_escolhidas]
+    fig = go.Figure(
+        go.Bar(
+            x=[nomes[codigo] for codigo in series_escolhidas],
+            y=valores,
+            marker_color=[cores[codigo] for codigo in series_escolhidas],
+            text=[f"{valor:.1f}%" for valor in valores],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="%{x}<br>Retorno acumulado: %{y:.2f}%<extra></extra>",
+        )
+    )
+    menor = min([0, *valores])
+    maior = max([0, *valores])
+    margem = max(2.0, (maior - menor) * 0.16)
+    fig.update_layout(
+        title={
+            "text": f"Retorno acumulado · {rotulo_periodo}",
+            "x": 0,
+            "xanchor": "left",
+            "font": {"size": 22},
+        },
+        autosize=False,
+        width=1100,
+        height=420,
+        margin={"l": 25, "r": 20, "t": 75, "b": 80},
+        showlegend=False,
+        dragmode=False,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    fig.update_xaxes(showgrid=False, automargin=True, fixedrange=True)
+    fig.update_yaxes(
+        title_text="Retorno acumulado",
+        ticksuffix="%",
+        range=[menor - margem, maior + margem],
+        gridcolor="#E2E8F0",
+        zerolinecolor="#98A2B3",
+        automargin=True,
+        fixedrange=True,
+    )
+    return fig
+
+
 def criar_tabela_estatisticas(
     analise: pd.DataFrame,
     series_escolhidas: list[str],
@@ -2939,10 +3092,36 @@ def gerar_pdf(dados_json: str) -> bytes:
     if importlib.util.find_spec("reportlab") is None and not python_bundled.exists():
         raise RuntimeError("A biblioteca de geração de PDF não está instalada.")
 
-    with tempfile.TemporaryDirectory(prefix="radar_retorno_") as temporaria:
-        entrada = Path(temporaria) / "dados.json"
-        saida = Path(temporaria) / "radar-de-retorno.pdf"
-        entrada.write_text(dados_json, encoding="utf-8")
+    pasta_temporaria_pdf = Path(__file__).resolve().parent / ".radar_runtime" / "pdf"
+    pasta_temporaria_pdf.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        prefix="radar_retorno_",
+        suffix=".json",
+        dir=pasta_temporaria_pdf,
+        delete=False,
+        encoding="utf-8",
+    ) as arquivo_entrada:
+        arquivo_entrada.write(dados_json)
+        entrada = Path(arquivo_entrada.name)
+    saida = entrada.with_suffix(".pdf")
+
+    try:
+        # No Streamlit Cloud, o ReportLab já está instalado e o gerador pode
+        # rodar no mesmo processo, evitando a abertura de outro Python.
+        if importlib.util.find_spec("reportlab") is not None:
+            argumentos_originais = sys.argv[:]
+            try:
+                sys.argv = [str(gerador), str(entrada), str(saida)]
+                runpy.run_path(str(gerador), run_name="__main__")
+            finally:
+                sys.argv = argumentos_originais
+            if not saida.exists():
+                raise RuntimeError("Não foi possível gerar o PDF.")
+            return saida.read_bytes()
+
+        # No Anaconda local, enquanto o ReportLab não estiver instalado,
+        # preservamos o runtime auxiliar que já funcionava no projeto.
         processo = subprocess.run(
             [str(python_pdf), str(gerador), str(entrada), str(saida)],
             cwd=runtime,
@@ -2954,6 +3133,14 @@ def gerar_pdf(dados_json: str) -> bytes:
             detalhe = processo.stderr.strip().splitlines()[-1] if processo.stderr else ""
             raise RuntimeError(f"Não foi possível gerar o PDF. {detalhe}")
         return saida.read_bytes()
+    finally:
+        for arquivo_temporario in (entrada, saida):
+            try:
+                arquivo_temporario.unlink(missing_ok=True)
+            except OSError:
+                # O Windows pode manter o arquivo bloqueado por alguns
+                # instantes; isso não deve impedir o download já concluído.
+                pass
 
 
 cabecalho_contextual("Análise de índices")
@@ -3201,6 +3388,22 @@ try:
             f"Equivalente anual: {resultado['anualizado']:.2%} a.a.",
             delta_color="off",
         )
+
+    st.plotly_chart(
+        criar_grafico_barras_periodo(
+            resultados_periodo,
+            series_escolhidas,
+            nomes,
+            rotulo_periodo,
+        ),
+        width=1100,
+        config={
+            "responsive": False,
+            "displaylogo": False,
+            "displayModeBar": False,
+            "scrollZoom": False,
+        },
+    )
 
     st.plotly_chart(
         criar_grafico_periodo(periodo, series_escolhidas, nomes),
