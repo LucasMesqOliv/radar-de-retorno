@@ -124,6 +124,26 @@ def aplicar_identidade_visual():
             opacity: 1 !important;
         }
 
+        [data-testid="stSidebar"] [data-testid="stNumberInput"]
+        [data-baseweb="input"] > div {
+            background: #ffffff !important;
+            border-color: #c8d5e6 !important;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stNumberInput"] input {
+            color: #071d39 !important;
+            -webkit-text-fill-color: #071d39 !important;
+            caret-color: var(--radar-blue) !important;
+            font-weight: 750 !important;
+            opacity: 1 !important;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stNumberInput"] button,
+        [data-testid="stSidebar"] [data-testid="stNumberInput"] button * {
+            color: #36506d !important;
+            fill: #36506d !important;
+        }
+
         [data-testid="stSidebar"] [role="radiogroup"] label {
             padding: .55rem .65rem;
             margin: .12rem 0;
