@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 import base64
 import hmac
+from html import escape
 import importlib.util
 import io
 import json
@@ -1557,74 +1558,138 @@ def prazo_dias_extrato(valor, tipo_dia=""):
 
 
 def renderizar_fichas_fundos(cadastro, cnpjs, extrato, historico):
-    for cnpj in cnpjs:
-        fundo = cadastro[cadastro["cnpj"].eq(cnpj)].iloc[0]
-        linha_extrato = extrato[extrato["cnpj"].eq(cnpj)]
-        ext = linha_extrato.iloc[0] if not linha_extrato.empty else pd.Series(dtype=object)
-        benchmark = texto_extrato(fundo.get("indicador_desempenho"), "")
-        if not benchmark:
-            benchmark = texto_extrato(ext.get("PARAM_TAXA_PERFM"))
-        taxa_adm = ext.get("TAXA_ADM")
-        taxa_adm_texto = "Não informada" if pd.isna(taxa_adm) else f"{taxa_adm:.2f}% a.a."
-        taxa_perf = ext.get("TAXA_PERFM")
-        taxa_perf_texto = "Não informada" if pd.isna(taxa_perf) else f"{taxa_perf:.2f}%"
-        aplicacao = ext.get("APLIC_MIN")
-        aplicacao_texto = "Não informada" if pd.isna(aplicacao) else formatar_reais(aplicacao)
-        data_extrato = ext.get("DT_COMPTC")
-        referencia = (
-            pd.Timestamp(data_extrato).strftime("%d/%m/%Y")
-            if pd.notna(data_extrato)
-            else "não disponível"
-        )
-        with st.expander(f"{fundo['nome']} · ficha do fundo", expanded=len(cnpjs) == 1):
-            st.caption(f"CNPJ {formatar_cnpj(cnpj)} · extrato declarado em {referencia}")
-            colunas = st.columns(4)
-            colunas[0].metric("Situação cadastral", texto_extrato(fundo.get("situacao")))
-            colunas[1].metric("Benchmark declarado", benchmark)
-            colunas[2].metric("Taxa de administração", taxa_adm_texto)
-            colunas[3].metric("Condomínio", texto_extrato(ext.get("CONDOM")))
+    st.markdown(
+        """
+        <style>
+        .fundo-ficha {
+            max-width: 720px;
+            margin: 0 0 0.75rem 0;
+            overflow: hidden;
+            border: 1px solid #cfdae8;
+            border-radius: 12px;
+            background: #ffffff;
+            box-shadow: 0 5px 18px rgba(8, 38, 75, 0.06);
+        }
+        .fundo-ficha-cabecalho {
+            padding: 0.72rem 0.85rem;
+            border-bottom: 3px solid #19c2d8;
+            background: linear-gradient(110deg, #08264c, #1555a0);
+            color: #ffffff;
+        }
+        .fundo-ficha-nome {
+            font-size: 0.86rem;
+            font-weight: 800;
+            line-height: 1.25;
+            text-transform: uppercase;
+        }
+        .fundo-ficha-ref {
+            margin-top: 0.2rem;
+            color: #cceaf6;
+            font-size: 0.66rem;
+        }
+        .fundo-ficha-linha {
+            display: grid;
+            grid-template-columns: minmax(120px, 42%) minmax(0, 58%);
+            align-items: center;
+            gap: 0.5rem;
+            min-height: 29px;
+            padding: 0.31rem 0.72rem;
+            border-bottom: 1px solid #e4ebf3;
+            font-size: 0.73rem;
+            line-height: 1.15;
+        }
+        .fundo-ficha-linha:nth-child(even) { background: #edf6ff; }
+        .fundo-ficha-linha:nth-child(odd) { background: #ffffff; }
+        .fundo-ficha-linha:last-child { border-bottom: 0; }
+        .fundo-ficha-chave { color: #36506d; }
+        .fundo-ficha-valor {
+            color: #071d39;
+            font-weight: 650;
+            overflow-wrap: anywhere;
+            text-align: right;
+        }
+        @media (max-width: 700px) {
+            .fundo-ficha { max-width: 100%; }
+            .fundo-ficha-linha { grid-template-columns: 43% 57%; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("Informações dos fundos", expanded=True):
+        colunas = st.columns(min(2, len(cnpjs)))
+        for indice, cnpj in enumerate(cnpjs):
+            fundo = cadastro[cadastro["cnpj"].eq(cnpj)].iloc[0]
+            linha_extrato = extrato[extrato["cnpj"].eq(cnpj)]
+            ext = linha_extrato.iloc[0] if not linha_extrato.empty else pd.Series(dtype=object)
             dados_recentes = historico[historico["cnpj"].eq(cnpj)].dropna(subset=["data"])
-            if not dados_recentes.empty:
-                atual = dados_recentes.sort_values("data").iloc[-1]
-                atuais = st.columns(4)
-                atuais[0].metric("Última cota", f"{atual['cota']:.6f}")
-                atuais[1].metric("Patrimônio líquido", formatar_reais(atual["patrimonio"]))
-                atuais[2].metric(
-                    "Cotistas",
-                    "Não informado"
-                    if pd.isna(atual["cotistas"])
-                    else f"{atual['cotistas']:,.0f}".replace(",", "."),
-                )
-                atuais[3].metric("Data da posição", atual["data"].strftime("%d/%m/%Y"))
-            detalhes = pd.DataFrame(
-                {
-                    "Informação": [
-                        "Administrador",
-                        "Gestor",
-                        "Classificação",
-                        "Público-alvo",
-                        "Aplicação mínima",
-                        "Conversão da aplicação",
-                        "Conversão do resgate",
-                        "Pagamento do resgate",
-                        "Taxa de performance",
-                        "Captação disponível",
-                    ],
-                    "Valor": [
-                        texto_extrato(fundo.get("administrador")),
-                        texto_extrato(fundo.get("gestor")),
-                        texto_extrato(ext.get("CLASSE_ANBIMA"), texto_extrato(fundo.get("classificacao"))),
-                        texto_extrato(ext.get("PUBLICO_ALVO"), texto_extrato(fundo.get("publico_alvo"))),
-                        aplicacao_texto,
-                        prazo_dias_extrato(ext.get("QT_DIA_CONVERSAO_COTA")),
-                        prazo_dias_extrato(ext.get("QT_DIA_RESGATE_COTAS")),
-                        prazo_dias_extrato(ext.get("QT_DIA_PAGTO_RESGATE"), ext.get("TP_DIA_PAGTO_RESGATE")),
-                        taxa_perf_texto,
-                        "Não informada no extrato público da CVM",
-                    ],
-                }
+            atual = (
+                dados_recentes.sort_values("data").iloc[-1]
+                if not dados_recentes.empty
+                else pd.Series(dtype=object)
             )
-            st.dataframe(detalhes, hide_index=True, width="stretch", height=385)
+            benchmark = texto_extrato(fundo.get("indicador_desempenho"), "")
+            if not benchmark:
+                benchmark = texto_extrato(ext.get("PARAM_TAXA_PERFM"))
+            taxa_adm = ext.get("TAXA_ADM")
+            taxa_adm_texto = "Não informada" if pd.isna(taxa_adm) else f"{taxa_adm:.2f}% a.a."
+            taxa_perf = ext.get("TAXA_PERFM")
+            taxa_perf_texto = "Não informada" if pd.isna(taxa_perf) else f"{taxa_perf:.2f}%"
+            aplicacao = ext.get("APLIC_MIN")
+            aplicacao_texto = "Não informada" if pd.isna(aplicacao) else formatar_reais(aplicacao)
+            data_extrato = ext.get("DT_COMPTC")
+            referencia = (
+                pd.Timestamp(data_extrato).strftime("%d/%m/%Y")
+                if pd.notna(data_extrato)
+                else "não disponível"
+            )
+            cotistas = atual.get("cotistas")
+            cotistas_texto = (
+                "Não informado"
+                if pd.isna(cotistas)
+                else f"{cotistas:,.0f}".replace(",", ".")
+            )
+            linhas = [
+                ("Tipo de ativo", texto_extrato(fundo.get("tipo"))),
+                ("CNPJ", formatar_cnpj(cnpj)),
+                ("Situação", texto_extrato(fundo.get("situacao"))),
+                ("Administrador", texto_extrato(fundo.get("administrador"))),
+                ("Gestão", texto_extrato(fundo.get("gestor"))),
+                ("Classificação", texto_extrato(ext.get("CLASSE_ANBIMA"), texto_extrato(fundo.get("classificacao")))),
+                ("Benchmark", benchmark),
+                ("Condomínio", texto_extrato(ext.get("CONDOM"))),
+                ("Captação", "Não informada pela CVM"),
+                ("Público-alvo", texto_extrato(ext.get("PUBLICO_ALVO"), texto_extrato(fundo.get("publico_alvo")))),
+                ("Taxa de administração", taxa_adm_texto),
+                ("Taxa de performance", taxa_perf_texto),
+                ("Aplicação mínima", aplicacao_texto),
+                ("Conversão da aplicação", prazo_dias_extrato(ext.get("QT_DIA_CONVERSAO_COTA"))),
+                ("Conversão do resgate", prazo_dias_extrato(ext.get("QT_DIA_RESGATE_COTAS"))),
+                ("Pagamento do resgate", prazo_dias_extrato(ext.get("QT_DIA_PAGTO_RESGATE"), ext.get("TP_DIA_PAGTO_RESGATE"))),
+                ("Última cota", "Não informada" if pd.isna(atual.get("cota")) else f"{atual['cota']:.6f}"),
+                ("Patrimônio líquido", formatar_reais(atual.get("patrimonio"))),
+                ("Cotistas", cotistas_texto),
+                ("Data da posição", "Não informada" if pd.isna(atual.get("data")) else atual["data"].strftime("%d/%m/%Y")),
+            ]
+            corpo = "".join(
+                '<div class="fundo-ficha-linha">'
+                f'<span class="fundo-ficha-chave">{escape(chave)}</span>'
+                f'<span class="fundo-ficha-valor">{escape(str(valor))}</span>'
+                "</div>"
+                for chave, valor in linhas
+            )
+            ficha = (
+                '<div class="fundo-ficha">'
+                '<div class="fundo-ficha-cabecalho">'
+                f'<div class="fundo-ficha-nome">{escape(str(fundo["nome"]))}</div>'
+                f'<div class="fundo-ficha-ref">Extrato CVM declarado em {escape(referencia)}</div>'
+                "</div>"
+                f"<div>{corpo}</div>"
+                "</div>"
+            )
+            with colunas[indice % len(colunas)]:
+                st.markdown(ficha, unsafe_allow_html=True)
 
 
 def renderizar_analise_completa_fundos(cadastro, cnpjs, benchmarks, anos):
