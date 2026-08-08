@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+import base64
 import hmac
 import importlib.util
 import io
@@ -442,6 +443,13 @@ URL_INFORME_DIARIO_CVM = (
     "https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/"
     "inf_diario_fi_{mes}.zip"
 )
+URL_EXTRATO_FUNDOS_CVM = (
+    "https://dados.cvm.gov.br/dados/FI/DOC/EXTRATO/DADOS/extrato_fi.csv"
+)
+URL_HISTORICO_INDICE_B3 = (
+    "https://sistemaswebb3-listados.b3.com.br/"
+    "indexStatisticsProxy/IndexCall/GetDownloadPortfolioDay/{parametros}"
+)
 
 
 def normalizar_cnpj(valor) -> str:
@@ -472,14 +480,19 @@ def formatar_reais(valor) -> str:
     return f"R$ {numero:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def baixar_arquivo_cvm(url: str, nome: str) -> Path:
+def baixar_arquivo_cvm(
+    url: str,
+    nome: str,
+    validade_segundos: int = 86_400,
+    validar_zip: bool = True,
+) -> Path:
     pasta_cache = Path(tempfile.gettempdir()) / "radar_retorno_cvm"
     pasta_cache.mkdir(parents=True, exist_ok=True)
     arquivo = pasta_cache / nome
     atualizado = (
         arquivo.exists()
         and arquivo.stat().st_size > 1_000
-        and time.time() - arquivo.stat().st_mtime < 86_400
+        and time.time() - arquivo.stat().st_mtime < validade_segundos
     )
     if atualizado:
         return arquivo
@@ -499,7 +512,7 @@ def baixar_arquivo_cvm(url: str, nome: str) -> Path:
                 temporario.write(bloco)
         caminho_temporario = Path(temporario.name)
 
-    if not zipfile.is_zipfile(caminho_temporario):
+    if validar_zip and not zipfile.is_zipfile(caminho_temporario):
         caminho_temporario.unlink(missing_ok=True)
         raise RuntimeError("A CVM retornou um arquivo inválido.")
     caminho_temporario.replace(arquivo)
@@ -527,6 +540,7 @@ def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
                     "Tipo_Classe",
                     "Classificacao",
                     "Classificacao_Anbima",
+                    "Indicador_Desempenho",
                     "Publico_Alvo",
                     "Patrimonio_Liquido",
                     "Data_Patrimonio_Liquido",
@@ -563,6 +577,7 @@ def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
             "Tipo_Classe": "tipo",
             "Classificacao": "classificacao",
             "Classificacao_Anbima": "classificacao_anbima",
+            "Indicador_Desempenho": "indicador_desempenho",
             "Publico_Alvo": "publico_alvo",
             "Patrimonio_Liquido": "patrimonio_cadastral",
             "Data_Patrimonio_Liquido": "data_patrimonio_cadastral",
@@ -587,7 +602,12 @@ def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
             "Gestor": "gestor",
         }
     )
-    for coluna in ["classificacao", "classificacao_anbima", "publico_alvo"]:
+    for coluna in [
+        "classificacao",
+        "classificacao_anbima",
+        "indicador_desempenho",
+        "publico_alvo",
+    ]:
         fundos_adicionais[coluna] = ""
 
     colunas = [
@@ -597,6 +617,7 @@ def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
         "tipo",
         "classificacao",
         "classificacao_anbima",
+        "indicador_desempenho",
         "publico_alvo",
         "patrimonio_cadastral",
         "data_patrimonio_cadastral",
@@ -653,9 +674,18 @@ def buscar_fundos_cvm(
 @st.cache_data(ttl=86_400, show_spinner=False)
 def carregar_informe_mes_cvm(mes: str, cnpjs: tuple[str, ...]) -> pd.DataFrame:
     nome_zip = f"inf_diario_fi_{mes}.zip"
+    periodo_arquivo = pd.Period(mes, freq="M")
+    idade_meses = pd.Period(date.today(), freq="M").ordinal - periodo_arquivo.ordinal
+    if idade_meses <= 1:
+        validade = 86_400
+    elif idade_meses <= 12:
+        validade = 604_800
+    else:
+        validade = 31_536_000
     arquivo = baixar_arquivo_cvm(
         URL_INFORME_DIARIO_CVM.format(mes=mes),
         nome_zip,
+        validade_segundos=validade,
     )
     with zipfile.ZipFile(arquivo) as pacote:
         nome_csv = next(
@@ -686,17 +716,28 @@ def carregar_informe_mes_cvm(mes: str, cnpjs: tuple[str, ...]) -> pd.DataFrame:
         colunas_existentes = [
             coluna for coluna in colunas_desejadas if coluna in cabecalho
         ]
+        partes_filtradas = []
         with pacote.open(nome_csv) as dados_arquivo:
-            dados = pd.read_csv(
+            for parte in pd.read_csv(
                 dados_arquivo,
                 sep=";",
                 encoding="latin1",
                 dtype={coluna_cnpj: str},
                 usecols=colunas_existentes,
-            )
+                chunksize=100_000,
+            ):
+                parte["cnpj"] = parte[coluna_cnpj].map(normalizar_cnpj)
+                parte = parte[parte["cnpj"].isin(set(cnpjs))]
+                if not parte.empty:
+                    partes_filtradas.append(parte.copy())
 
-    dados["cnpj"] = dados[coluna_cnpj].map(normalizar_cnpj)
-    dados = dados[dados["cnpj"].isin(set(cnpjs))].copy()
+    if idade_meses > 1:
+        arquivo.unlink(missing_ok=True)
+    if partes_filtradas:
+        dados = pd.concat(partes_filtradas, ignore_index=True)
+    else:
+        dados = pd.DataFrame(columns=[*colunas_existentes, "cnpj"])
+
     dados["data"] = pd.to_datetime(dados["DT_COMPTC"], errors="coerce")
     renomear = {
         "VL_QUOTA": "cota",
@@ -721,6 +762,417 @@ def carregar_informe_mes_cvm(mes: str, cnpjs: tuple[str, ...]) -> pd.DataFrame:
             "cotistas",
         ]
     ].sort_values(["cnpj", "data"])
+
+
+@st.cache_data(ttl=86_400, show_spinner=False)
+def carregar_extrato_fundos_cvm(cnpjs: tuple[str, ...]) -> pd.DataFrame:
+    arquivo = baixar_arquivo_cvm(
+        URL_EXTRATO_FUNDOS_CVM,
+        "extrato_fi.csv",
+        validar_zip=False,
+    )
+    cabecalho = pd.read_csv(
+        arquivo,
+        sep=";",
+        encoding="latin1",
+        nrows=0,
+    ).columns.tolist()
+    coluna_cnpj = (
+        "CNPJ_FUNDO_CLASSE"
+        if "CNPJ_FUNDO_CLASSE" in cabecalho
+        else "CNPJ_FUNDO"
+    )
+    desejadas = [
+        coluna_cnpj,
+        "DT_COMPTC",
+        "CONDOM",
+        "PUBLICO_ALVO",
+        "CLASSE_ANBIMA",
+        "DISTRIB",
+        "APLIC_MIN",
+        "ATUALIZ_DIARIA_COTA",
+        "QT_DIA_CONVERSAO_COTA",
+        "QT_DIA_RESGATE_COTAS",
+        "QT_DIA_PAGTO_RESGATE",
+        "TP_DIA_PAGTO_RESGATE",
+        "TAXA_ADM",
+        "EXISTE_TAXA_PERFM",
+        "TAXA_PERFM",
+        "PARAM_TAXA_PERFM",
+        "PR_INDICE_REFER_TAXA_PERFM",
+    ]
+    usecols = [coluna for coluna in desejadas if coluna in cabecalho]
+    partes = []
+    for parte in pd.read_csv(
+        arquivo,
+        sep=";",
+        encoding="latin1",
+        dtype=str,
+        usecols=usecols,
+        chunksize=50_000,
+    ):
+        parte["cnpj"] = parte[coluna_cnpj].map(normalizar_cnpj)
+        filtrada = parte[parte["cnpj"].isin(set(cnpjs))]
+        if not filtrada.empty:
+            partes.append(filtrada.copy())
+    if not partes:
+        return pd.DataFrame(columns=["cnpj"] + usecols)
+    extrato = pd.concat(partes, ignore_index=True)
+    extrato["DT_COMPTC"] = pd.to_datetime(extrato["DT_COMPTC"], errors="coerce")
+    extrato = (
+        extrato.sort_values("DT_COMPTC")
+        .groupby("cnpj", as_index=False)
+        .last()
+    )
+    for coluna in [
+        "APLIC_MIN",
+        "QT_DIA_CONVERSAO_COTA",
+        "QT_DIA_RESGATE_COTAS",
+        "QT_DIA_PAGTO_RESGATE",
+        "TAXA_ADM",
+        "TAXA_PERFM",
+        "PR_INDICE_REFER_TAXA_PERFM",
+    ]:
+        if coluna in extrato:
+            extrato[coluna] = pd.to_numeric(extrato[coluna], errors="coerce")
+    return extrato
+
+
+@st.cache_data(ttl=86_400, show_spinner=False)
+def carregar_historico_fundos_cvm(
+    cnpjs: tuple[str, ...],
+    anos: int,
+) -> pd.DataFrame:
+    periodo_final = pd.Period(date.today(), freq="M")
+    periodo_inicial = periodo_final - anos * 12
+    partes = []
+    for periodo in pd.period_range(periodo_inicial, periodo_final, freq="M"):
+        try:
+            parte = carregar_informe_mes_cvm(periodo.strftime("%Y%m"), cnpjs)
+        except requests.HTTPError as erro:
+            if erro.response is not None and erro.response.status_code == 404:
+                continue
+            raise
+        if not parte.empty:
+            partes.append(parte)
+    if not partes:
+        raise RuntimeError("A CVM não retornou histórico para os fundos selecionados.")
+    historico = pd.concat(partes, ignore_index=True)
+    return (
+        historico.dropna(subset=["data", "cota"])
+        .drop_duplicates(["cnpj", "data"], keep="last")
+        .sort_values(["cnpj", "data"])
+    )
+
+
+@st.cache_data(ttl=86_400, show_spinner=False)
+def carregar_cdi_para_fundos(ano_inicial: int) -> pd.Series:
+    partes = []
+    url = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados"
+    for ano in range(ano_inicial, date.today().year + 1):
+        resposta = requests.get(
+            url,
+            params={
+                "formato": "json",
+                "dataInicial": f"01/01/{ano}",
+                "dataFinal": f"31/12/{ano}",
+            },
+            headers={"User-Agent": "Radar-de-Retorno/1.0"},
+            timeout=30,
+        )
+        resposta.raise_for_status()
+        parte = pd.DataFrame(resposta.json())
+        if not parte.empty:
+            partes.append(parte)
+    if not partes:
+        raise RuntimeError("O Banco Central não retornou a série do CDI.")
+    dados = pd.concat(partes, ignore_index=True)
+    dados["data"] = pd.to_datetime(dados["data"], dayfirst=True)
+    dados["taxa"] = pd.to_numeric(
+        dados["valor"].astype(str).str.replace(",", "."),
+        errors="coerce",
+    ) / 100
+    dados = dados.dropna(subset=["data", "taxa"]).sort_values("data")
+    indice = (1 + dados["taxa"]).cumprod()
+    return pd.Series(indice.values, index=dados["data"], name="CDI")
+
+
+@st.cache_data(ttl=86_400, show_spinner=False)
+def carregar_indice_b3(codigo: str, ano_inicial: int) -> pd.Series:
+    meses = {
+        "Jan": 1,
+        "Fev": 2,
+        "Mar": 3,
+        "Abr": 4,
+        "Mai": 5,
+        "Jun": 6,
+        "Jul": 7,
+        "Ago": 8,
+        "Set": 9,
+        "Out": 10,
+        "Nov": 11,
+        "Dez": 12,
+    }
+    registros = []
+    for ano in range(ano_inicial, date.today().year + 1):
+        parametros = base64.b64encode(
+            json.dumps(
+                {"index": codigo, "language": "pt-br", "year": str(ano)},
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).decode("ascii")
+        resposta = requests.get(
+            URL_HISTORICO_INDICE_B3.format(parametros=parametros),
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": (
+                    "https://sistemaswebb3-listados.b3.com.br/"
+                    f"indexStatisticsPage/daily-evolution/{codigo}?language=pt-br"
+                ),
+            },
+            timeout=30,
+        )
+        resposta.raise_for_status()
+        conteudo = base64.b64decode(resposta.text.strip()).decode("latin1")
+        tabela = pd.read_csv(io.StringIO(conteudo), sep=";", skiprows=1, dtype=str)
+        coluna_dia = tabela.columns[0]
+        for _, linha in tabela.iterrows():
+            try:
+                dia = int(linha[coluna_dia])
+            except (TypeError, ValueError):
+                continue
+            for coluna_mes, numero_mes in meses.items():
+                if coluna_mes not in tabela.columns or pd.isna(linha[coluna_mes]):
+                    continue
+                texto = str(linha[coluna_mes]).strip()
+                if not texto:
+                    continue
+                valor = pd.to_numeric(
+                    texto.replace(".", "").replace(",", "."),
+                    errors="coerce",
+                )
+                if pd.isna(valor):
+                    continue
+                try:
+                    data_registro = pd.Timestamp(ano, numero_mes, dia)
+                except ValueError:
+                    continue
+                registros.append((data_registro, float(valor)))
+    if not registros:
+        raise RuntimeError(f"A B3 não retornou a série {codigo}.")
+    serie = pd.Series(
+        [valor for _, valor in registros],
+        index=[data_registro for data_registro, _ in registros],
+        name=codigo,
+    )
+    return serie[~serie.index.duplicated(keep="last")].sort_index()
+
+
+def obter_series_analise_fundos(
+    historico: pd.DataFrame,
+    cadastro: pd.DataFrame,
+    cnpjs: tuple[str, ...],
+    benchmarks: list[str],
+) -> dict[str, pd.Series]:
+    series = {}
+    for cnpj in cnpjs:
+        nome = cadastro.loc[cadastro["cnpj"].eq(cnpj), "nome"].iloc[0]
+        rotulo = nome
+        if rotulo in series:
+            rotulo = f"{nome} · {formatar_cnpj(cnpj)}"
+        dados_fundo = historico[historico["cnpj"].eq(cnpj)]
+        serie = pd.Series(
+            dados_fundo["cota"].values,
+            index=pd.DatetimeIndex(dados_fundo["data"]),
+            name=rotulo,
+        )
+        series[rotulo] = serie[~serie.index.duplicated(keep="last")].sort_index()
+
+    primeira_data = min(serie.index.min() for serie in series.values())
+    if "CDI" in benchmarks:
+        series["CDI"] = carregar_cdi_para_fundos(primeira_data.year)
+    if "Ibovespa" in benchmarks:
+        series["Ibovespa"] = carregar_indice_b3("IBOV", primeira_data.year)
+    if "IDIV" in benchmarks:
+        series["IDIV"] = carregar_indice_b3("IDIV", primeira_data.year)
+    primeira_data_comum = max(serie.dropna().index.min() for serie in series.values())
+    ultima_data_comum = min(serie.dropna().index.max() for serie in series.values())
+    return {
+        nome: serie[
+            (serie.index >= primeira_data_comum) & (serie.index <= ultima_data_comum)
+        ]
+        for nome, serie in series.items()
+    }
+
+
+def valor_mais_proximo(serie: pd.Series, data_alvo: pd.Timestamp):
+    serie = serie.dropna().sort_index()
+    if serie.empty:
+        return None
+    posicao = (serie.index - data_alvo).to_series(index=serie.index).abs().idxmin()
+    return float(serie.loc[posicao]), pd.Timestamp(posicao)
+
+
+def calcular_retorno_serie(
+    serie: pd.Series,
+    meses: int | None = None,
+    inicio_calendario: str | None = None,
+):
+    serie = serie.dropna().sort_index()
+    if len(serie) < 2:
+        return None
+    data_final = pd.Timestamp(serie.index.max())
+    valor_final = float(serie.iloc[-1])
+    if inicio_calendario == "mes":
+        data_alvo = data_final.to_period("M").start_time - pd.Timedelta(days=1)
+    elif inicio_calendario == "ano":
+        data_alvo = pd.Timestamp(data_final.year, 1, 1) - pd.Timedelta(days=1)
+    else:
+        data_alvo = data_final - pd.DateOffset(months=meses or 0)
+    if data_alvo < serie.index.min():
+        return None
+    inicial = valor_mais_proximo(serie, data_alvo)
+    if inicial is None:
+        return None
+    valor_inicial, data_inicial = inicial
+    if valor_inicial <= 0 or data_inicial >= data_final:
+        return None
+    retorno = valor_final / valor_inicial - 1
+    dias = (data_final - data_inicial).days
+    anualizado = (1 + retorno) ** (365.25 / dias) - 1 if dias > 0 else None
+    return {
+        "retorno": retorno,
+        "anualizado": anualizado,
+        "data_inicial": data_inicial,
+        "data_final": data_final,
+    }
+
+
+def criar_tabela_periodos_fundos(series: dict[str, pd.Series]) -> pd.DataFrame:
+    periodos = [
+        ("Mês", None, "mes"),
+        ("Ano", None, "ano"),
+        ("1 mês", 1, None),
+        ("6 meses", 6, None),
+        ("12 meses", 12, None),
+        ("24 meses", 24, None),
+        ("36 meses", 36, None),
+        ("60 meses", 60, None),
+    ]
+    linhas = []
+    for nome, serie in series.items():
+        linha = {"Ativo": nome}
+        for rotulo, meses, calendario in periodos:
+            resultado = calcular_retorno_serie(serie, meses, calendario)
+            linha[rotulo] = "—" if resultado is None else f"{resultado['retorno']:.2%}"
+        linhas.append(linha)
+    return pd.DataFrame(linhas)
+
+
+def calcular_metricas_risco_fundos(
+    series: dict[str, pd.Series],
+) -> pd.DataFrame:
+    retornos_cdi = series.get("CDI", pd.Series(dtype=float)).pct_change().dropna()
+    linhas = []
+    for nome, serie in series.items():
+        retornos = serie.pct_change()
+        retornos = retornos[retornos.map(lambda valor: pd.notna(valor) and abs(valor) != float("inf"))]
+        if retornos.empty:
+            continue
+        volatilidade = retornos.std() * (252 ** 0.5)
+        acumulado = (1 + retornos).cumprod()
+        drawdown = acumulado / acumulado.cummax() - 1
+        sharpe = None
+        if nome != "CDI" and not retornos_cdi.empty:
+            alinhados = pd.concat([retornos, retornos_cdi], axis=1, join="inner").dropna()
+            if len(alinhados) > 2:
+                excesso = alinhados.iloc[:, 0] - alinhados.iloc[:, 1]
+                desvio_excesso = excesso.std()
+                if desvio_excesso and not pd.isna(desvio_excesso):
+                    sharpe = excesso.mean() / desvio_excesso * (252 ** 0.5)
+        linhas.append(
+            {
+                "Ativo": nome,
+                "Volatilidade a.a.": volatilidade,
+                "Sharpe vs. CDI": sharpe,
+                "Maior queda": drawdown.min(),
+                "Dias positivos": (retornos > 0).mean(),
+                "Melhor dia": retornos.max(),
+                "Pior dia": retornos.min(),
+            }
+        )
+    return pd.DataFrame(linhas)
+
+
+def criar_grafico_evolucao_fundos(series: dict[str, pd.Series]):
+    cores = ["#1769e0", "#19c2d8", "#ff6b4a", "#7656d6", "#0f9d78", "#e2a126", "#64748b"]
+    fig = go.Figure()
+    for (nome, serie), cor in zip(series.items(), cores):
+        serie = serie.dropna().sort_index()
+        normalizada = serie / serie.iloc[0] * 100
+        fig.add_trace(
+            go.Scatter(
+                x=normalizada.index,
+                y=normalizada.values,
+                mode="lines",
+                name=nome,
+                line={"width": 2.4, "color": cor},
+                hovertemplate="%{x|%d/%m/%Y}<br>Índice: %{y:.2f}<extra></extra>",
+            )
+        )
+    fig.update_layout(
+        title="Evolução da rentabilidade · início em 100",
+        height=500,
+        margin={"l": 25, "r": 20, "t": 65, "b": 85},
+        hovermode="x unified",
+        dragmode=False,
+        legend={"orientation": "h", "y": -0.18, "x": 0.5, "xanchor": "center"},
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    fig.update_xaxes(showgrid=False, fixedrange=True)
+    fig.update_yaxes(gridcolor="#e2e8f0", fixedrange=True)
+    return fig
+
+
+def criar_janelas_moveis_fundos(
+    series: dict[str, pd.Series],
+    meses_janela: int,
+):
+    cores = ["#1769e0", "#19c2d8", "#ff6b4a", "#7656d6", "#0f9d78", "#e2a126", "#64748b"]
+    fig = go.Figure()
+    dados_janelas = {}
+    for (nome, serie), cor in zip(series.items(), cores):
+        mensal = serie.dropna().sort_index().resample("ME").last()
+        retorno = mensal.pct_change(meses_janela)
+        if meses_janela >= 12:
+            retorno = (1 + retorno) ** (12 / meses_janela) - 1
+        retorno = retorno.dropna()
+        dados_janelas[nome] = retorno
+        fig.add_trace(
+            go.Scatter(
+                x=retorno.index,
+                y=retorno.values * 100,
+                mode="lines",
+                name=nome,
+                line={"width": 2.2, "color": cor},
+                hovertemplate="%{x|%m/%Y}<br>Retorno: %{y:.2f}%<extra></extra>",
+            )
+        )
+    tipo = "anualizado" if meses_janela >= 12 else "acumulado"
+    fig.update_layout(
+        title=f"Janelas móveis de {meses_janela} meses · retorno {tipo}",
+        height=470,
+        margin={"l": 25, "r": 20, "t": 65, "b": 85},
+        hovermode="x unified",
+        dragmode=False,
+        legend={"orientation": "h", "y": -0.18, "x": 0.5, "xanchor": "center"},
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    fig.update_xaxes(showgrid=False, fixedrange=True)
+    fig.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0", fixedrange=True)
+    return fig, dados_janelas
 
 
 def carregar_mes_recente_fundos(cnpjs: tuple[str, ...]):
@@ -838,7 +1290,7 @@ def seletor_fundo_cvm(
     )
 
 
-def pagina_fundos():
+def _pagina_fundos_legada():
     cabecalho_contextual("Fundos de investimento", "Dados oficiais da CVM")
     st.markdown(
         """
@@ -1087,6 +1539,326 @@ def pagina_fundos():
         "Fonte: [Portal de Dados Abertos da CVM]"
         "(https://dados.cvm.gov.br/dataset/fi-doc-inf_diario). "
         "As informações são reportadas pelos administradores dos fundos."
+    )
+    rodape_radar()
+
+
+def texto_extrato(valor, padrao="Não informado"):
+    if valor is None or pd.isna(valor) or not str(valor).strip():
+        return padrao
+    return str(valor).strip()
+
+
+def prazo_dias_extrato(valor, tipo_dia=""):
+    if valor is None or pd.isna(valor):
+        return "Não informado"
+    sufixo = f" {str(tipo_dia).lower()}" if texto_extrato(tipo_dia, "") else " dias"
+    return f"D+{int(float(valor))}{sufixo}"
+
+
+def renderizar_fichas_fundos(cadastro, cnpjs, extrato, historico):
+    for cnpj in cnpjs:
+        fundo = cadastro[cadastro["cnpj"].eq(cnpj)].iloc[0]
+        linha_extrato = extrato[extrato["cnpj"].eq(cnpj)]
+        ext = linha_extrato.iloc[0] if not linha_extrato.empty else pd.Series(dtype=object)
+        benchmark = texto_extrato(fundo.get("indicador_desempenho"), "")
+        if not benchmark:
+            benchmark = texto_extrato(ext.get("PARAM_TAXA_PERFM"))
+        taxa_adm = ext.get("TAXA_ADM")
+        taxa_adm_texto = "Não informada" if pd.isna(taxa_adm) else f"{taxa_adm:.2f}% a.a."
+        taxa_perf = ext.get("TAXA_PERFM")
+        taxa_perf_texto = "Não informada" if pd.isna(taxa_perf) else f"{taxa_perf:.2f}%"
+        aplicacao = ext.get("APLIC_MIN")
+        aplicacao_texto = "Não informada" if pd.isna(aplicacao) else formatar_reais(aplicacao)
+        data_extrato = ext.get("DT_COMPTC")
+        referencia = (
+            pd.Timestamp(data_extrato).strftime("%d/%m/%Y")
+            if pd.notna(data_extrato)
+            else "não disponível"
+        )
+        with st.expander(f"{fundo['nome']} · ficha do fundo", expanded=len(cnpjs) == 1):
+            st.caption(f"CNPJ {formatar_cnpj(cnpj)} · extrato declarado em {referencia}")
+            colunas = st.columns(4)
+            colunas[0].metric("Situação cadastral", texto_extrato(fundo.get("situacao")))
+            colunas[1].metric("Benchmark declarado", benchmark)
+            colunas[2].metric("Taxa de administração", taxa_adm_texto)
+            colunas[3].metric("Condomínio", texto_extrato(ext.get("CONDOM")))
+            dados_recentes = historico[historico["cnpj"].eq(cnpj)].dropna(subset=["data"])
+            if not dados_recentes.empty:
+                atual = dados_recentes.sort_values("data").iloc[-1]
+                atuais = st.columns(4)
+                atuais[0].metric("Última cota", f"{atual['cota']:.6f}")
+                atuais[1].metric("Patrimônio líquido", formatar_reais(atual["patrimonio"]))
+                atuais[2].metric(
+                    "Cotistas",
+                    "Não informado"
+                    if pd.isna(atual["cotistas"])
+                    else f"{atual['cotistas']:,.0f}".replace(",", "."),
+                )
+                atuais[3].metric("Data da posição", atual["data"].strftime("%d/%m/%Y"))
+            detalhes = pd.DataFrame(
+                {
+                    "Informação": [
+                        "Administrador",
+                        "Gestor",
+                        "Classificação",
+                        "Público-alvo",
+                        "Aplicação mínima",
+                        "Conversão da aplicação",
+                        "Conversão do resgate",
+                        "Pagamento do resgate",
+                        "Taxa de performance",
+                        "Captação disponível",
+                    ],
+                    "Valor": [
+                        texto_extrato(fundo.get("administrador")),
+                        texto_extrato(fundo.get("gestor")),
+                        texto_extrato(ext.get("CLASSE_ANBIMA"), texto_extrato(fundo.get("classificacao"))),
+                        texto_extrato(ext.get("PUBLICO_ALVO"), texto_extrato(fundo.get("publico_alvo"))),
+                        aplicacao_texto,
+                        prazo_dias_extrato(ext.get("QT_DIA_CONVERSAO_COTA")),
+                        prazo_dias_extrato(ext.get("QT_DIA_RESGATE_COTAS")),
+                        prazo_dias_extrato(ext.get("QT_DIA_PAGTO_RESGATE"), ext.get("TP_DIA_PAGTO_RESGATE")),
+                        taxa_perf_texto,
+                        "Não informada no extrato público da CVM",
+                    ],
+                }
+            )
+            st.dataframe(detalhes, hide_index=True, width="stretch", height=385)
+
+
+def renderizar_analise_completa_fundos(cadastro, cnpjs, benchmarks, anos):
+    with st.spinner(
+        "Montando o histórico. No primeiro acesso, a consulta de vários anos pode levar alguns minutos..."
+    ):
+        extrato = carregar_extrato_fundos_cvm(tuple(cnpjs))
+        historico = carregar_historico_fundos_cvm(tuple(cnpjs), anos)
+        benchmarks_internos = list(dict.fromkeys([*benchmarks, "CDI"]))
+        series_completas = obter_series_analise_fundos(
+            historico, cadastro, tuple(cnpjs), benchmarks_internos
+        )
+
+    nomes_fundos = list(series_completas)[: len(cnpjs)]
+    series_exibidas = {
+        nome: serie
+        for nome, serie in series_completas.items()
+        if nome in nomes_fundos or nome in benchmarks
+    }
+    if not series_exibidas or any(serie.empty for serie in series_exibidas.values()):
+        st.warning("Não há histórico comum suficiente para a seleção realizada.")
+        return
+
+    renderizar_fichas_fundos(cadastro, cnpjs, extrato, historico)
+
+    with st.expander("Rentabilidade", expanded=True):
+        st.plotly_chart(
+            criar_grafico_evolucao_fundos(series_exibidas),
+            width="stretch",
+            config={"displayModeBar": False, "displaylogo": False},
+        )
+        st.markdown("#### Retornos por período")
+        st.dataframe(
+            criar_tabela_periodos_fundos(series_exibidas),
+            hide_index=True,
+            width="stretch",
+        )
+        data_inicial = max(serie.index.min() for serie in series_exibidas.values())
+        data_final = min(serie.index.max() for serie in series_exibidas.values())
+        st.caption(
+            f"Séries comparadas em uma base comum, de {data_inicial:%d/%m/%Y} a "
+            f"{data_final:%d/%m/%Y}. Base 100 no início do gráfico."
+        )
+
+    with st.expander("Análise de risco", expanded=False):
+        metricas = calcular_metricas_risco_fundos(series_completas)
+        if "CDI" not in benchmarks:
+            metricas = metricas[metricas["Ativo"].ne("CDI")]
+        st.dataframe(
+            metricas,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Volatilidade a.a.": st.column_config.NumberColumn(format="percent"),
+                "Sharpe vs. CDI": st.column_config.NumberColumn(format="%.2f"),
+                "Maior queda": st.column_config.NumberColumn(format="percent"),
+                "Dias positivos": st.column_config.NumberColumn(format="percent"),
+                "Melhor dia": st.column_config.NumberColumn(format="percent"),
+                "Pior dia": st.column_config.NumberColumn(format="percent"),
+            },
+        )
+        st.caption(
+            "Volatilidade e Sharpe anualizados com 252 dias úteis. O Sharpe considera "
+            "o excesso de retorno diário sobre o CDI; maior queda é o drawdown máximo."
+        )
+
+    with st.expander("Janelas móveis", expanded=False):
+        opcoes_janela = {
+            "6 meses": 6,
+            "12 meses": 12,
+            "2 anos": 24,
+            "3 anos": 36,
+            "5 anos": 60,
+        }
+        janela_escolhida = st.selectbox(
+            "Tamanho de cada janela",
+            list(opcoes_janela),
+            index=1,
+            key=f"janela_fundos_{'_'.join(cnpjs)}",
+        )
+        meses_janela = opcoes_janela[janela_escolhida]
+        grafico_janelas, janelas = criar_janelas_moveis_fundos(
+            series_exibidas, meses_janela
+        )
+        if not any(not serie.empty for serie in janelas.values()):
+            st.info("Escolha uma janela menor ou um período histórico maior.")
+        else:
+            st.plotly_chart(
+                grafico_janelas,
+                width="stretch",
+                config={"displayModeBar": False, "displaylogo": False},
+            )
+            resumo = []
+            for nome, serie in janelas.items():
+                if serie.empty:
+                    continue
+                resumo.append(
+                    {
+                        "Ativo": nome,
+                        "Pior janela": serie.min(),
+                        "Janela mediana": serie.median(),
+                        "Melhor janela": serie.max(),
+                        "Janelas analisadas": len(serie),
+                    }
+                )
+            st.dataframe(
+                pd.DataFrame(resumo),
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "Pior janela": st.column_config.NumberColumn(format="percent"),
+                    "Janela mediana": st.column_config.NumberColumn(format="percent"),
+                    "Melhor janela": st.column_config.NumberColumn(format="percent"),
+                },
+            )
+
+
+def pagina_fundos():
+    cabecalho_contextual("Fundos de investimento", "Dados oficiais da CVM")
+    st.markdown(
+        """
+        <section class="radar-hero">
+            <span class="radar-hero-kicker">PESQUISA, COMPARAÇÃO E RISCO</span>
+            <h1>Fundos no mesmo radar.</h1>
+            <p>Compare rentabilidade, risco e consistência histórica em uma leitura única e intuitiva.</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+    try:
+        with st.spinner("Atualizando o cadastro oficial de fundos..."):
+            cadastro = carregar_cadastro_fundos_cvm()
+    except Exception as erro:
+        st.error("Não foi possível acessar o cadastro de fundos da CVM agora.")
+        st.caption(str(erro))
+        rodape_radar()
+        return
+
+    st.caption(
+        f"{len(cadastro):,} fundos e classes no cadastro da CVM. "
+        "A pesquisa considera nome, CNPJ, administrador e gestor."
+    )
+    aba_pesquisa, aba_comparacao = st.tabs(["Analisar um fundo", "Comparar fundos"])
+    opcoes_periodo = {"1 ano": 1, "2 anos": 2, "3 anos": 3, "5 anos": 5}
+    opcoes_benchmark = ["CDI", "Ibovespa", "IDIV"]
+
+    with aba_pesquisa:
+        cnpj = seletor_fundo_cvm(cadastro, "Pesquise por nome ou CNPJ", "analise_individual")
+        coluna_periodo, coluna_benchmark = st.columns([1, 2])
+        with coluna_periodo:
+            periodo = st.selectbox(
+                "Histórico do gráfico", list(opcoes_periodo), index=1, key="periodo_fundo_individual"
+            )
+        with coluna_benchmark:
+            benchmarks = st.multiselect(
+                "Comparar também com", opcoes_benchmark, default=["CDI"], key="bench_individual"
+            )
+        analisar = st.button(
+            "Gerar análise completa",
+            type="primary",
+            width="stretch",
+            disabled=cnpj is None,
+            key="analisar_fundo_individual",
+        )
+        if analisar:
+            st.session_state["analise_fundo_individual"] = (
+                cnpj, tuple(benchmarks), opcoes_periodo[periodo]
+            )
+        configuracao = st.session_state.get("analise_fundo_individual")
+        if configuracao == (cnpj, tuple(benchmarks), opcoes_periodo[periodo]):
+            try:
+                renderizar_analise_completa_fundos(
+                    cadastro, [cnpj], benchmarks, opcoes_periodo[periodo]
+                )
+            except Exception as erro:
+                st.error("Não foi possível montar a análise completa deste fundo.")
+                st.caption(str(erro))
+
+    with aba_comparacao:
+        st.write("Selecione de um a quatro fundos e acrescente os benchmarks desejados.")
+        quantidade = st.select_slider(
+            "Quantidade de fundos", options=[1, 2, 3, 4], value=2, key="quantidade_fundos"
+        )
+        selecionados = []
+        colunas = st.columns(2)
+        for indice in range(quantidade):
+            with colunas[indice % 2]:
+                selecionados.append(
+                    seletor_fundo_cvm(
+                        cadastro, f"Fundo {indice + 1}", f"comparacao_fundo_{indice + 1}"
+                    )
+                )
+        cnpjs = list(dict.fromkeys(cnpj for cnpj in selecionados if cnpj))
+        if len(cnpjs) < len([cnpj for cnpj in selecionados if cnpj]):
+            st.warning("Um fundo repetido será considerado apenas uma vez.")
+        coluna_periodo, coluna_benchmark = st.columns([1, 2])
+        with coluna_periodo:
+            periodo = st.selectbox(
+                "Histórico do gráfico", list(opcoes_periodo), index=1, key="periodo_comparacao_fundos"
+            )
+        with coluna_benchmark:
+            benchmarks = st.multiselect(
+                "Benchmarks", opcoes_benchmark, default=["CDI"], key="bench_comparacao_fundos"
+            )
+        comparar = st.button(
+            "Comparar seleção",
+            type="primary",
+            width="stretch",
+            disabled=not cnpjs,
+            key="comparar_selecao_fundos",
+        )
+        if comparar:
+            st.session_state["analise_comparacao_fundos"] = (
+                tuple(cnpjs), tuple(benchmarks), opcoes_periodo[periodo]
+            )
+        configuracao = st.session_state.get("analise_comparacao_fundos")
+        if configuracao == (tuple(cnpjs), tuple(benchmarks), opcoes_periodo[periodo]):
+            try:
+                renderizar_analise_completa_fundos(
+                    cadastro, cnpjs, benchmarks, opcoes_periodo[periodo]
+                )
+            except Exception as erro:
+                st.error("Não foi possível concluir a comparação dos fundos.")
+                st.caption(str(erro))
+
+    st.info(
+        "IHFA: a integração está preparada, mas a série oficial da ANBIMA exige "
+        "credenciais de acesso ao ANBIMA Feed. CDI, Ibovespa e IDIV já estão disponíveis."
+    )
+    st.markdown(
+        "Fontes: [CVM — informes diários](https://dados.cvm.gov.br/dataset/fi-doc-inf_diario), "
+        "[CVM — extrato](https://dados.cvm.gov.br/dataset/fi-doc-extrato), "
+        "Banco Central do Brasil e B3. Dados reportados pelos administradores; "
+        "retornos brutos pela variação das cotas."
     )
     rodape_radar()
 
