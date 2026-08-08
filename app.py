@@ -2704,6 +2704,7 @@ def criar_grafico(
     series_escolhidas: list[str],
     nomes: dict[str, str],
     prazo_anos: int,
+    visualizacao: str = "Anualizado em linhas",
 ):
     cores = {
         "cdi": "#174A7E",
@@ -2715,28 +2716,48 @@ def criar_grafico(
     }
     estilos = {"prefixado": "dash", "referencia": "dot"}
     fig = go.Figure()
+    exibir_acumulado = visualizacao == "Acumulado em barras"
 
     for codigo in series_escolhidas:
-        fig.add_trace(
-            go.Scatter(
-                x=analise["data_final"],
-                y=analise[codigo] * 100,
-                mode="lines",
-                name=nomes[codigo],
-                line={
-                    "color": cores[codigo],
-                    "width": 2.5,
-                    "dash": estilos.get(codigo, "solid"),
-                },
-                hovertemplate=(
-                    "%{x|%m/%Y}<br>Retorno anualizado: %{y:.2f}%<extra></extra>"
-                ),
+        if exibir_acumulado:
+            fig.add_trace(
+                go.Bar(
+                    x=analise["data_final"],
+                    y=analise[f"{codigo}_acumulado"] * 100,
+                    name=nomes[codigo],
+                    marker_color=cores[codigo],
+                    opacity=0.82,
+                    hovertemplate=(
+                        "%{x|%m/%Y}<br>Retorno acumulado da janela: "
+                        "%{y:.2f}%<extra></extra>"
+                    ),
+                )
             )
-        )
+        else:
+            fig.add_trace(
+                go.Scatter(
+                    x=analise["data_final"],
+                    y=analise[codigo] * 100,
+                    mode="lines",
+                    name=nomes[codigo],
+                    line={
+                        "color": cores[codigo],
+                        "width": 2.5,
+                        "dash": estilos.get(codigo, "solid"),
+                    },
+                    hovertemplate=(
+                        "%{x|%m/%Y}<br>Retorno anualizado: %{y:.2f}%<extra></extra>"
+                    ),
+                )
+            )
 
     fig.update_layout(
         title={
-            "text": f"Retornos anualizados em janelas móveis de {prazo_anos} anos",
+            "text": (
+                f"Retornos acumulados em janelas móveis de {prazo_anos} anos"
+                if exibir_acumulado
+                else f"Retornos anualizados em janelas móveis de {prazo_anos} anos"
+            ),
             "x": 0,
             "xanchor": "left",
             "font": {"size": 22},
@@ -2746,6 +2767,9 @@ def criar_grafico(
         height=520,
         margin={"l": 25, "r": 20, "t": 75, "b": 80},
         hovermode="x unified",
+        barmode="group",
+        bargap=0.06,
+        bargroupgap=0.02,
         dragmode=False,
         legend={
             "orientation": "h",
@@ -2766,7 +2790,7 @@ def criar_grafico(
         fixedrange=True,
     )
     fig.update_yaxes(
-        title_text="Retorno anualizado",
+        title_text="Retorno acumulado da janela" if exibir_acumulado else "Retorno anualizado",
         ticksuffix="%",
         gridcolor="#E2E2E2",
         zerolinecolor="#BBBBBB",
@@ -2884,65 +2908,6 @@ def criar_grafico_periodo(
     fig.update_yaxes(
         title_text="Índice (início = 100)",
         gridcolor="#E2E2E2",
-        automargin=True,
-        fixedrange=True,
-    )
-    return fig
-
-
-def criar_grafico_barras_periodo(
-    resultados: dict,
-    series_escolhidas: list[str],
-    nomes: dict[str, str],
-    rotulo_periodo: str,
-):
-    """Compara o retorno acumulado do intervalo em barras."""
-    cores = {
-        "cdi": "#1769E0",
-        "ipca": "#19A974",
-        "prefixado": "#FF6B4A",
-        "sp500": "#7A4EAB",
-        "sp500_ipca": "#D47A22",
-        "referencia": "#667085",
-    }
-    valores = [resultados[codigo]["acumulado"] * 100 for codigo in series_escolhidas]
-    fig = go.Figure(
-        go.Bar(
-            x=[nomes[codigo] for codigo in series_escolhidas],
-            y=valores,
-            marker_color=[cores[codigo] for codigo in series_escolhidas],
-            text=[f"{valor:.1f}%" for valor in valores],
-            textposition="outside",
-            cliponaxis=False,
-            hovertemplate="%{x}<br>Retorno acumulado: %{y:.2f}%<extra></extra>",
-        )
-    )
-    menor = min([0, *valores])
-    maior = max([0, *valores])
-    margem = max(2.0, (maior - menor) * 0.16)
-    fig.update_layout(
-        title={
-            "text": f"Retorno acumulado · {rotulo_periodo}",
-            "x": 0,
-            "xanchor": "left",
-            "font": {"size": 22},
-        },
-        autosize=False,
-        width=1100,
-        height=420,
-        margin={"l": 25, "r": 20, "t": 75, "b": 80},
-        showlegend=False,
-        dragmode=False,
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-    )
-    fig.update_xaxes(showgrid=False, automargin=True, fixedrange=True)
-    fig.update_yaxes(
-        title_text="Retorno acumulado",
-        ticksuffix="%",
-        range=[menor - margem, maior + margem],
-        gridcolor="#E2E8F0",
-        zerolinecolor="#98A2B3",
         automargin=True,
         fixedrange=True,
     )
@@ -3146,8 +3111,9 @@ def gerar_pdf(dados_json: str) -> bytes:
 cabecalho_contextual("Análise de índices")
 st.title("Análise de índices")
 st.caption(
-    "Compare diferentes referências em janelas móveis mensais. Cada ponto "
-    "representa o retorno anualizado na janela encerrada naquele mês."
+    "Compare diferentes referências em janelas móveis mensais. Cada mês "
+    "representa uma janela encerrada naquela data; você pode visualizar a "
+    "taxa anualizada em linhas ou o retorno total acumulado em barras."
 )
 
 with st.container(border=True):
@@ -3279,8 +3245,26 @@ try:
             f"{frequencia:.1%}",
         )
 
+    visualizacao_janelas = st.radio(
+        "Visualização das janelas móveis",
+        ["Anualizado em linhas", "Acumulado em barras"],
+        horizontal=True,
+        key="visualizacao_janelas_indices",
+    )
+    if visualizacao_janelas == "Acumulado em barras":
+        st.caption(
+            "Cada barra representa o retorno total da janela encerrada naquele mês, "
+            "sem transformar o resultado em uma taxa anual."
+        )
+
     st.plotly_chart(
-        criar_grafico(analise, series_escolhidas, nomes, prazo_anos),
+        criar_grafico(
+            analise,
+            series_escolhidas,
+            nomes,
+            prazo_anos,
+            visualizacao_janelas,
+        ),
         width=1100,
         config={
             "responsive": False,
@@ -3388,22 +3372,6 @@ try:
             f"Equivalente anual: {resultado['anualizado']:.2%} a.a.",
             delta_color="off",
         )
-
-    st.plotly_chart(
-        criar_grafico_barras_periodo(
-            resultados_periodo,
-            series_escolhidas,
-            nomes,
-            rotulo_periodo,
-        ),
-        width=1100,
-        config={
-            "responsive": False,
-            "displaylogo": False,
-            "displayModeBar": False,
-            "scrollZoom": False,
-        },
-    )
 
     st.plotly_chart(
         criar_grafico_periodo(periodo, series_escolhidas, nomes),
