@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import sqlite3
 from threading import Lock
+import unicodedata
 
 import pandas as pd
 
@@ -25,6 +26,23 @@ COLUNAS_COTAS = [
     "captacao_dia",
     "resgate_dia",
     "cotistas",
+]
+
+COLUNAS_CADASTRO_FUNDOS = [
+    "cnpj",
+    "nome",
+    "data_constituicao",
+    "situacao",
+    "tipo",
+    "classificacao",
+    "classificacao_anbima",
+    "indicador_desempenho",
+    "publico_alvo",
+    "patrimonio_cadastral",
+    "data_patrimonio_cadastral",
+    "administrador",
+    "gestor",
+    "em_funcionamento",
 ]
 
 _POOL_POSTGRES = None
@@ -134,6 +152,9 @@ def conexao():
 
 
 def inicializar(banco) -> None:
+    if backend_banco() == "postgresql":
+        _executar(banco, "CREATE EXTENSION IF NOT EXISTS unaccent").close()
+        _executar(banco, "CREATE EXTENSION IF NOT EXISTS pg_trgm").close()
     _executar(
         banco,
         """
@@ -146,6 +167,41 @@ def inicializar(banco) -> None:
         )
         """
     ).close()
+    _executar(
+        banco,
+        """
+        CREATE TABLE IF NOT EXISTS cadastro_fundos (
+            cnpj TEXT NOT NULL PRIMARY KEY,
+            nome TEXT NOT NULL,
+            data_constituicao TEXT,
+            situacao TEXT,
+            tipo TEXT,
+            classificacao TEXT,
+            classificacao_anbima TEXT,
+            indicador_desempenho TEXT,
+            publico_alvo TEXT,
+            patrimonio_cadastral DOUBLE PRECISION,
+            data_patrimonio_cadastral TEXT,
+            administrador TEXT,
+            gestor TEXT,
+            em_funcionamento INTEGER NOT NULL,
+            busca TEXT NOT NULL DEFAULT '',
+            atualizado_em TEXT NOT NULL
+        )
+        """
+    ).close()
+    _executar(
+        banco,
+        "ALTER TABLE cadastro_fundos ADD COLUMN IF NOT EXISTS busca TEXT NOT NULL DEFAULT ''",
+    ).close()
+    if backend_banco() == "postgresql":
+        _executar(
+            banco,
+            """
+            CREATE INDEX IF NOT EXISTS cadastro_fundos_busca_trgm_idx
+            ON cadastro_fundos USING gin (busca gin_trgm_ops)
+            """,
+        ).close()
     _executar(
         banco,
         """
@@ -193,6 +249,280 @@ def carregar_serie_mercado(codigo: str) -> pd.DataFrame:
     dados["data"] = pd.to_datetime(dados["data"], errors="coerce")
     dados["valor"] = pd.to_numeric(dados["valor"], errors="coerce")
     return dados.dropna(subset=["data", "valor"])
+
+
+def carregar_cadastro_fundos() -> pd.DataFrame:
+    with conexao() as banco:
+        dados = _ler_dataframe(
+            banco,
+            """
+            SELECT cnpj, nome, data_constituicao, situacao, tipo, classificacao,
+                   classificacao_anbima, indicador_desempenho, publico_alvo,
+                   patrimonio_cadastral, data_patrimonio_cadastral,
+                   administrador, gestor, em_funcionamento
+            FROM cadastro_fundos
+            ORDER BY em_funcionamento DESC, patrimonio_cadastral DESC
+            """,
+            (),
+            COLUNAS_CADASTRO_FUNDOS,
+        )
+    return _normalizar_dataframe_cadastro(dados)
+
+
+def fechar_conexoes() -> None:
+    global _POOL_POSTGRES
+    if _POOL_POSTGRES is not None:
+        _POOL_POSTGRES.close()
+        _POOL_POSTGRES = None
+
+
+def contar_cadastro_fundos() -> int:
+    with conexao() as banco:
+        cursor = _executar(banco, "SELECT COUNT(*) FROM cadastro_fundos")
+        resultado = cursor.fetchone()
+        cursor.close()
+    return int(resultado[0]) if resultado else 0
+
+
+def buscar_cadastro_fundos(
+    termo: str,
+    digitos: str = "",
+    limite: int = 30,
+) -> pd.DataFrame:
+    if digitos:
+        filtro = "cnpj LIKE ?"
+        parametros = (f"%{digitos}%", limite)
+    else:
+        palavras = [palavra for palavra in termo.lower().split() if palavra]
+        if not palavras:
+            return pd.DataFrame(columns=COLUNAS_CADASTRO_FUNDOS)
+        filtro = " AND ".join("busca LIKE ?" for _ in palavras)
+        parametros = (*[f"%{palavra}%" for palavra in palavras], limite)
+
+    with conexao() as banco:
+        dados = _ler_dataframe(
+            banco,
+            f"""
+            SELECT cnpj, nome, data_constituicao, situacao, tipo, classificacao,
+                   classificacao_anbima, indicador_desempenho, publico_alvo,
+                   patrimonio_cadastral, data_patrimonio_cadastral,
+                   administrador, gestor, em_funcionamento
+            FROM cadastro_fundos
+            WHERE {filtro}
+            ORDER BY em_funcionamento DESC, patrimonio_cadastral DESC
+            LIMIT ?
+            """,
+            parametros,
+            COLUNAS_CADASTRO_FUNDOS,
+        )
+    return _normalizar_dataframe_cadastro(dados)
+
+
+def carregar_cadastro_fundos_por_cnpj(cnpjs: tuple[str, ...]) -> pd.DataFrame:
+    if not cnpjs:
+        return pd.DataFrame(columns=COLUNAS_CADASTRO_FUNDOS)
+    marcadores = ",".join("?" for _ in cnpjs)
+    with conexao() as banco:
+        dados = _ler_dataframe(
+            banco,
+            f"""
+            SELECT cnpj, nome, data_constituicao, situacao, tipo, classificacao,
+                   classificacao_anbima, indicador_desempenho, publico_alvo,
+                   patrimonio_cadastral, data_patrimonio_cadastral,
+                   administrador, gestor, em_funcionamento
+            FROM cadastro_fundos
+            WHERE cnpj IN ({marcadores})
+            """,
+            cnpjs,
+            COLUNAS_CADASTRO_FUNDOS,
+        )
+    return _normalizar_dataframe_cadastro(dados)
+
+
+def _normalizar_dataframe_cadastro(dados: pd.DataFrame) -> pd.DataFrame:
+    if dados.empty:
+        return pd.DataFrame(columns=COLUNAS_CADASTRO_FUNDOS)
+    dados["data_constituicao"] = pd.to_datetime(
+        dados["data_constituicao"], errors="coerce"
+    )
+    dados["data_patrimonio_cadastral"] = pd.to_datetime(
+        dados["data_patrimonio_cadastral"], errors="coerce"
+    )
+    dados["patrimonio_cadastral"] = pd.to_numeric(
+        dados["patrimonio_cadastral"], errors="coerce"
+    )
+    dados["em_funcionamento"] = dados["em_funcionamento"].astype(bool)
+    return dados
+
+
+def cadastro_fundos_atualizado_recentemente(
+    validade_segundos: int = 86_400,
+) -> bool:
+    with conexao() as banco:
+        cursor = _executar(banco, "SELECT MAX(atualizado_em) FROM cadastro_fundos")
+        resultado = cursor.fetchone()
+        cursor.close()
+    if not resultado or not resultado[0]:
+        return False
+    atualizado_em = datetime.fromisoformat(resultado[0])
+    idade = datetime.now(timezone.utc) - atualizado_em
+    return idade.total_seconds() < validade_segundos
+
+
+def salvar_cadastro_fundos(dados: pd.DataFrame) -> None:
+    if dados.empty:
+        return
+    normalizados = dados.copy()
+    for coluna in COLUNAS_CADASTRO_FUNDOS:
+        if coluna not in normalizados:
+            normalizados[coluna] = pd.NA
+    agora = datetime.now(timezone.utc).isoformat()
+
+    def texto_ou_nulo(valor):
+        if pd.isna(valor):
+            return None
+        texto = str(valor).strip()
+        return texto or None
+
+    def data_ou_nulo(valor):
+        if pd.isna(valor):
+            return None
+        return pd.Timestamp(valor).strftime("%Y-%m-%d")
+
+    def numero_ou_nulo(valor):
+        return None if pd.isna(valor) else float(valor)
+
+    def texto_busca(*valores) -> str:
+        texto = " ".join("" if pd.isna(valor) else str(valor) for valor in valores)
+        texto = unicodedata.normalize("NFKD", texto)
+        texto = "".join(caractere for caractere in texto if not unicodedata.combining(caractere))
+        return " ".join(texto.lower().split())
+
+    linhas = []
+    for linha in normalizados[COLUNAS_CADASTRO_FUNDOS].itertuples(
+        index=False, name=None
+    ):
+        (
+            cnpj,
+            nome,
+            data_constituicao,
+            situacao,
+            tipo,
+            classificacao,
+            classificacao_anbima,
+            indicador_desempenho,
+            publico_alvo,
+            patrimonio,
+            data_patrimonio,
+            administrador,
+            gestor,
+            em_funcionamento,
+        ) = linha
+        if pd.isna(cnpj) or pd.isna(nome):
+            continue
+        linhas.append(
+            (
+                str(cnpj),
+                str(nome),
+                data_ou_nulo(data_constituicao),
+                texto_ou_nulo(situacao),
+                texto_ou_nulo(tipo),
+                texto_ou_nulo(classificacao),
+                texto_ou_nulo(classificacao_anbima),
+                texto_ou_nulo(indicador_desempenho),
+                texto_ou_nulo(publico_alvo),
+                numero_ou_nulo(patrimonio),
+                data_ou_nulo(data_patrimonio),
+                texto_ou_nulo(administrador),
+                texto_ou_nulo(gestor),
+                int(bool(em_funcionamento)),
+                texto_busca(nome, cnpj, administrador, gestor),
+                agora,
+            )
+        )
+
+    with conexao() as banco:
+        if backend_banco() == "postgresql":
+            cursor = banco.cursor()
+            cursor.execute(
+                """
+                CREATE TEMP TABLE cadastro_fundos_carga
+                (LIKE cadastro_fundos INCLUDING DEFAULTS) ON COMMIT DROP
+                """
+            )
+            with cursor.copy(
+                """
+                COPY cadastro_fundos_carga (
+                    cnpj, nome, data_constituicao, situacao, tipo, classificacao,
+                    classificacao_anbima, indicador_desempenho, publico_alvo,
+                    patrimonio_cadastral, data_patrimonio_cadastral,
+                    administrador, gestor, em_funcionamento, busca, atualizado_em
+                ) FROM STDIN
+                """
+            ) as copia:
+                for linha in linhas:
+                    copia.write_row(linha)
+            cursor.execute(
+                """
+                INSERT INTO cadastro_fundos (
+                    cnpj, nome, data_constituicao, situacao, tipo, classificacao,
+                    classificacao_anbima, indicador_desempenho, publico_alvo,
+                    patrimonio_cadastral, data_patrimonio_cadastral,
+                    administrador, gestor, em_funcionamento, busca, atualizado_em
+                )
+                SELECT cnpj, nome, data_constituicao, situacao, tipo, classificacao,
+                       classificacao_anbima, indicador_desempenho, publico_alvo,
+                       patrimonio_cadastral, data_patrimonio_cadastral,
+                       administrador, gestor, em_funcionamento, busca, atualizado_em
+                FROM cadastro_fundos_carga
+                ON CONFLICT(cnpj) DO UPDATE SET
+                    nome = excluded.nome,
+                    data_constituicao = excluded.data_constituicao,
+                    situacao = excluded.situacao,
+                    tipo = excluded.tipo,
+                    classificacao = excluded.classificacao,
+                    classificacao_anbima = excluded.classificacao_anbima,
+                    indicador_desempenho = excluded.indicador_desempenho,
+                    publico_alvo = excluded.publico_alvo,
+                    patrimonio_cadastral = excluded.patrimonio_cadastral,
+                    data_patrimonio_cadastral = excluded.data_patrimonio_cadastral,
+                    administrador = excluded.administrador,
+                    gestor = excluded.gestor,
+                    em_funcionamento = excluded.em_funcionamento,
+                    busca = excluded.busca,
+                    atualizado_em = excluded.atualizado_em
+                """
+            )
+            cursor.close()
+        else:
+            _executar_muitos(
+                banco,
+                """
+                INSERT INTO cadastro_fundos (
+                    cnpj, nome, data_constituicao, situacao, tipo, classificacao,
+                    classificacao_anbima, indicador_desempenho, publico_alvo,
+                    patrimonio_cadastral, data_patrimonio_cadastral,
+                    administrador, gestor, em_funcionamento, busca, atualizado_em
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cnpj) DO UPDATE SET
+                    nome = excluded.nome,
+                    data_constituicao = excluded.data_constituicao,
+                    situacao = excluded.situacao,
+                    tipo = excluded.tipo,
+                    classificacao = excluded.classificacao,
+                    classificacao_anbima = excluded.classificacao_anbima,
+                    indicador_desempenho = excluded.indicador_desempenho,
+                    publico_alvo = excluded.publico_alvo,
+                    patrimonio_cadastral = excluded.patrimonio_cadastral,
+                    data_patrimonio_cadastral = excluded.data_patrimonio_cadastral,
+                    administrador = excluded.administrador,
+                    gestor = excluded.gestor,
+                    em_funcionamento = excluded.em_funcionamento,
+                    busca = excluded.busca,
+                    atualizado_em = excluded.atualizado_em
+                """,
+                linhas,
+            )
 
 
 def salvar_serie_mercado(codigo: str, dados: pd.DataFrame) -> None:

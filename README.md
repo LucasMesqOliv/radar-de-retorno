@@ -51,4 +51,14 @@ permanente executando:
 python scripts/migrar_para_postgres.py
 ```
 
+Para atualizar no banco permanente o cadastro de fundos e classes da CVM:
+
+```powershell
+python scripts/precarregar_cadastro_fundos.py
+```
+
+O site consulta o cadastro permanente por nome, CNPJ, administrador ou gestor,
+retornando somente os resultados da pesquisa. O cadastro oficial é renovado
+periodicamente; o histórico de cotas continua sendo carregado sob demanda.
+
 O endereço do banco é uma credencial e nunca deve ser salvo no GitHub.

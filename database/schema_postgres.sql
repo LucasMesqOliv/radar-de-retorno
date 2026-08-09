@@ -1,3 +1,6 @@
+CREATE EXTENSION IF NOT EXISTS unaccent;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 CREATE TABLE IF NOT EXISTS series_mercado (
     codigo TEXT NOT NULL,
     data TEXT NOT NULL,
@@ -26,3 +29,25 @@ CREATE TABLE IF NOT EXISTS periodos_consultados (
     consultado_em TEXT NOT NULL,
     PRIMARY KEY (tipo, identificador, periodo)
 );
+
+CREATE TABLE IF NOT EXISTS cadastro_fundos (
+    cnpj TEXT NOT NULL PRIMARY KEY,
+    nome TEXT NOT NULL,
+    data_constituicao TEXT,
+    situacao TEXT,
+    tipo TEXT,
+    classificacao TEXT,
+    classificacao_anbima TEXT,
+    indicador_desempenho TEXT,
+    publico_alvo TEXT,
+    patrimonio_cadastral DOUBLE PRECISION,
+    data_patrimonio_cadastral TEXT,
+    administrador TEXT,
+    gestor TEXT,
+    em_funcionamento INTEGER NOT NULL,
+    busca TEXT NOT NULL DEFAULT '',
+    atualizado_em TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS cadastro_fundos_busca_trgm_idx
+ON cadastro_fundos USING gin (busca gin_trgm_ops);

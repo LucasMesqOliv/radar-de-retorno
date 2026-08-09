@@ -21,10 +21,16 @@ import requests
 import streamlit as st
 
 from radar_database import (
+    cadastro_fundos_atualizado_recentemente,
+    buscar_cadastro_fundos,
+    carregar_cadastro_fundos,
+    carregar_cadastro_fundos_por_cnpj,
     carregar_cotas,
     carregar_serie_mercado,
+    contar_cadastro_fundos,
     periodo_foi_consultado,
     registrar_periodo,
+    salvar_cadastro_fundos,
     salvar_cotas,
     salvar_serie_mercado,
     serie_mercado_atualizada_recentemente,
@@ -570,12 +576,60 @@ def baixar_arquivo_cvm(
     return arquivo
 
 
+def preparar_cadastro_fundos(cadastro: pd.DataFrame) -> pd.DataFrame:
+    cadastro = cadastro.copy()
+    cadastro["cnpj"] = cadastro["cnpj"].map(normalizar_cnpj)
+    cadastro = cadastro[
+        cadastro["cnpj"].str.fullmatch(r"\d{14}")
+        & cadastro["cnpj"].ne("00000000000000")
+    ]
+    cadastro["nome"] = cadastro["nome"].fillna("Fundo sem denominação")
+    cadastro["patrimonio_cadastral"] = pd.to_numeric(
+        cadastro["patrimonio_cadastral"], errors="coerce"
+    )
+    cadastro["data_constituicao"] = pd.to_datetime(
+        cadastro["data_constituicao"], errors="coerce"
+    )
+    cadastro["data_patrimonio_cadastral"] = pd.to_datetime(
+        cadastro["data_patrimonio_cadastral"], errors="coerce"
+    )
+    if "em_funcionamento" not in cadastro:
+        cadastro["em_funcionamento"] = cadastro["situacao"].fillna("").str.contains(
+            "Funcionamento Normal", case=False
+        )
+    else:
+        cadastro["em_funcionamento"] = cadastro["em_funcionamento"].fillna(False).astype(bool)
+    cadastro["_busca"] = (
+        cadastro["nome"].fillna("")
+        + " " + cadastro["cnpj"].fillna("")
+        + " " + cadastro["administrador"].fillna("")
+        + " " + cadastro["gestor"].fillna("")
+    ).map(normalizar_busca)
+    cadastro = cadastro.sort_values(
+        ["em_funcionamento", "patrimonio_cadastral"],
+        ascending=[False, False],
+        na_position="last",
+    ).drop_duplicates("cnpj")
+    return cadastro.reset_index(drop=True)
+
+
 @st.cache_data(ttl=86_400, show_spinner=False)
 def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
-    arquivo = baixar_arquivo_cvm(
-        URL_CADASTRO_FUNDOS_CVM,
-        "registro_fundo_classe.zip",
-    )
+    if cadastro_fundos_atualizado_recentemente():
+        armazenado = carregar_cadastro_fundos()
+        if not armazenado.empty:
+            return preparar_cadastro_fundos(armazenado)
+
+    try:
+        arquivo = baixar_arquivo_cvm(
+            URL_CADASTRO_FUNDOS_CVM,
+            "registro_fundo_classe.zip",
+        )
+    except Exception:
+        armazenado = carregar_cadastro_fundos()
+        if not armazenado.empty:
+            return preparar_cadastro_fundos(armazenado)
+        raise
     with zipfile.ZipFile(arquivo) as pacote:
         with pacote.open("registro_classe.csv") as dados_classe:
             classes = pd.read_csv(
@@ -684,42 +738,24 @@ def carregar_cadastro_fundos_cvm() -> pd.DataFrame:
         [classes[colunas], fundos_adicionais[colunas]],
         ignore_index=True,
     )
-    cadastro["cnpj"] = cadastro["cnpj"].map(normalizar_cnpj)
-    cadastro = cadastro[
-        cadastro["cnpj"].str.fullmatch(r"\d{14}")
-        & cadastro["cnpj"].ne("00000000000000")
-    ]
-    cadastro["nome"] = cadastro["nome"].fillna("Fundo sem denominação")
-    cadastro["patrimonio_cadastral"] = pd.to_numeric(
-        cadastro["patrimonio_cadastral"], errors="coerce"
-    )
-    cadastro["data_constituicao"] = pd.to_datetime(
-        cadastro["data_constituicao"], errors="coerce"
-    )
-    cadastro["em_funcionamento"] = cadastro["situacao"].fillna("").str.contains(
-        "Funcionamento Normal", case=False
-    )
-    cadastro["_busca"] = (
-        cadastro["nome"].fillna("")
-        + " " + cadastro["cnpj"].fillna("")
-        + " " + cadastro["administrador"].fillna("")
-        + " " + cadastro["gestor"].fillna("")
-    ).map(normalizar_busca)
-    cadastro = cadastro.sort_values(
-        ["em_funcionamento", "patrimonio_cadastral"],
-        ascending=[False, False],
-        na_position="last",
-    ).drop_duplicates("cnpj")
-    return cadastro.reset_index(drop=True)
+    cadastro = preparar_cadastro_fundos(cadastro)
+    salvar_cadastro_fundos(cadastro)
+    return cadastro
 
 
 def buscar_fundos_cvm(
-    cadastro: pd.DataFrame,
+    cadastro: pd.DataFrame | None,
     termo: str,
     limite: int = 30,
 ) -> pd.DataFrame:
     termo_normalizado = normalizar_busca(termo).strip()
     digitos = re.sub(r"\D", "", termo)
+    if cadastro is None:
+        return buscar_cadastro_fundos(
+            termo_normalizado,
+            digitos if len(digitos) >= 6 else "",
+            limite,
+        )
     if len(digitos) >= 6:
         mascara = cadastro["cnpj"].str.contains(digitos, regex=False)
     else:
@@ -1628,7 +1664,7 @@ def rotulo_fundo(registro: pd.Series) -> str:
 
 
 def seletor_fundo_cvm(
-    cadastro: pd.DataFrame,
+    cadastro: pd.DataFrame | None,
     titulo: str,
     chave: str,
 ):
@@ -2324,8 +2360,13 @@ def pagina_fundos():
         unsafe_allow_html=True,
     )
     try:
-        with st.spinner("Atualizando o cadastro oficial de fundos..."):
-            cadastro = carregar_cadastro_fundos_cvm()
+        cadastro = None
+        if not cadastro_fundos_atualizado_recentemente():
+            with st.spinner("Atualizando o cadastro oficial de fundos..."):
+                cadastro = carregar_cadastro_fundos_cvm()
+                total_cadastro = len(cadastro)
+        else:
+            total_cadastro = contar_cadastro_fundos()
     except Exception as erro:
         st.error("Não foi possível acessar o cadastro de fundos da CVM agora.")
         st.caption(str(erro))
@@ -2333,7 +2374,7 @@ def pagina_fundos():
         return
 
     st.caption(
-        f"{len(cadastro):,} fundos e classes no cadastro da CVM. "
+        f"{total_cadastro:,} fundos e classes no cadastro da CVM. "
         "A pesquisa considera nome, CNPJ, administrador e gestor."
     )
     aba_pesquisa, aba_comparacao = st.tabs(["Analisar um fundo", "Comparar fundos"])
@@ -2373,8 +2414,13 @@ def pagina_fundos():
         configuracao = st.session_state.get("analise_fundo_individual")
         if configuracao == (cnpj, tuple(benchmarks), opcoes_periodo[periodo]):
             try:
+                cadastro_selecionado = (
+                    cadastro[cadastro["cnpj"].eq(cnpj)].copy()
+                    if cadastro is not None
+                    else carregar_cadastro_fundos_por_cnpj((cnpj,))
+                )
                 renderizar_analise_completa_fundos(
-                    cadastro,
+                    cadastro_selecionado,
                     [cnpj],
                     benchmarks,
                     opcoes_periodo[periodo],
@@ -2424,8 +2470,13 @@ def pagina_fundos():
         configuracao = st.session_state.get("analise_comparacao_fundos")
         if configuracao == (tuple(cnpjs), tuple(benchmarks), opcoes_periodo[periodo]):
             try:
+                cadastro_selecionado = (
+                    cadastro[cadastro["cnpj"].isin(cnpjs)].copy()
+                    if cadastro is not None
+                    else carregar_cadastro_fundos_por_cnpj(tuple(cnpjs))
+                )
                 renderizar_analise_completa_fundos(
-                    cadastro,
+                    cadastro_selecionado,
                     cnpjs,
                     benchmarks,
                     opcoes_periodo[periodo],
