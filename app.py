@@ -406,8 +406,8 @@ def pagina_inicial():
             <span class="radar-hero-kicker">RADAR DE RETORNO</span>
             <h1>Encontre contexto antes de comparar retornos.</h1>
             <p>
-                Explore índices, consistência histórica e, em breve, fundos de
-                investimento em uma experiência única, clara e orientada a decisões.
+                Explore índices, fundos e renda fixa em uma experiência única,
+                clara e orientada a decisões.
             </p>
         </section>
         """,
@@ -419,7 +419,7 @@ def pagina_inicial():
     )
     busca = st.text_input(
         "Pesquisar ferramentas",
-        placeholder="Busque por índices, janelas móveis, CDI, IPCA ou fundos...",
+        placeholder="Busque por índices, fundos, duration ou marcação a mercado...",
         label_visibility="collapsed",
         key="busca_inicio",
     )
@@ -445,6 +445,19 @@ def pagina_inicial():
             ),
             "termos": "fundos fundo cnpj pesquisa comparação previdência prev",
         },
+        {
+            "pagina": "Renda fixa",
+            "kicker": "Novo simulador",
+            "titulo": "Renda fixa e marcação a mercado",
+            "texto": (
+                "Simule saída antecipada, duration, convexidade, cupons e "
+                "assimetrias de títulos prefixados ou IPCA+."
+            ),
+            "termos": (
+                "renda fixa titulo títulos duration convexidade dv01 marcação "
+                "mercado ipca prefixado cupom"
+            ),
+        },
     ]
     termo = busca.strip().casefold()
     exibidos = [
@@ -453,7 +466,10 @@ def pagina_inicial():
     ]
 
     if not exibidos:
-        st.info("Nenhuma ferramenta encontrada. Tente pesquisar por CDI, IPCA ou fundos.")
+        st.info(
+            "Nenhuma ferramenta encontrada. Tente pesquisar por CDI, IPCA, "
+            "fundos ou renda fixa."
+        )
     else:
         colunas = st.columns(len(exibidos))
         for coluna, modulo in zip(colunas, exibidos):
@@ -2646,6 +2662,413 @@ def pagina_fundos():
     rodape_radar()
 
 
+def anos_entre_datas(data_inicial, data_final) -> float:
+    return max((pd.Timestamp(data_final) - pd.Timestamp(data_inicial)).days / 365.25, 0.0)
+
+
+def gerar_fluxos_titulo(
+    data_compra,
+    data_vencimento,
+    valor_nominal: float,
+    taxa_cupom: float,
+    frequencia_meses: int | None,
+):
+    compra = pd.Timestamp(data_compra)
+    vencimento = pd.Timestamp(data_vencimento)
+    if frequencia_meses is None:
+        return [{"data": vencimento, "cupom": 0.0, "principal": valor_nominal}]
+
+    datas_fluxos = []
+    data_fluxo = vencimento
+    while data_fluxo > compra:
+        datas_fluxos.append(data_fluxo)
+        data_fluxo -= pd.DateOffset(months=frequencia_meses)
+    datas_fluxos.sort()
+    cupom_periodico = valor_nominal * (
+        (1 + taxa_cupom) ** (frequencia_meses / 12) - 1
+    )
+    return [
+        {
+            "data": data_fluxo,
+            "cupom": cupom_periodico,
+            "principal": valor_nominal if data_fluxo == vencimento else 0.0,
+        }
+        for data_fluxo in datas_fluxos
+    ]
+
+
+def precificar_fluxos_titulo(fluxos, data_avaliacao, taxa_mercado: float) -> float:
+    avaliacao = pd.Timestamp(data_avaliacao)
+    return sum(
+        (fluxo["cupom"] + fluxo["principal"])
+        / (1 + taxa_mercado) ** anos_entre_datas(avaliacao, fluxo["data"])
+        for fluxo in fluxos
+        if fluxo["data"] > avaliacao
+    )
+
+
+def metricas_risco_titulo(fluxos, data_avaliacao, taxa_mercado: float):
+    avaliacao = pd.Timestamp(data_avaliacao)
+    preco = precificar_fluxos_titulo(fluxos, avaliacao, taxa_mercado)
+    if preco <= 0:
+        return 0.0, 0.0, 0.0
+    parcelas = []
+    convexidades = []
+    for fluxo in fluxos:
+        if fluxo["data"] <= avaliacao:
+            continue
+        tempo = anos_entre_datas(avaliacao, fluxo["data"])
+        valor = fluxo["cupom"] + fluxo["principal"]
+        valor_presente = valor / (1 + taxa_mercado) ** tempo
+        parcelas.append(tempo * valor_presente)
+        convexidades.append(
+            valor * tempo * (tempo + 1)
+            / (1 + taxa_mercado) ** (tempo + 2)
+        )
+    duration_macaulay = sum(parcelas) / preco
+    duration_modificada = duration_macaulay / (1 + taxa_mercado)
+    convexidade = sum(convexidades) / preco
+    return duration_macaulay, duration_modificada, convexidade
+
+
+def fator_inflacao(data_inicial, data_final, ipca_anual: float) -> float:
+    return (1 + ipca_anual) ** anos_entre_datas(data_inicial, data_final)
+
+
+def pagina_renda_fixa():
+    cabecalho_contextual("Renda fixa", "Simulador educacional")
+    st.markdown(
+        """
+        <section class="radar-hero">
+            <span class="radar-hero-kicker">MARCAÇÃO A MERCADO E ASSIMETRIA</span>
+            <h1>Entenda como prazo, taxa e fluxo alteram o preço.</h1>
+            <p>
+                Simule uma saída antecipada, compare estruturas com ou sem cupom
+                e visualize duration, convexidade e sensibilidade às taxas.
+            </p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.container(border=True):
+        st.markdown("#### Como interpretar")
+        st.write(
+            "Quando a taxa exigida pelo mercado cai, o preço do título tende a subir; "
+            "quando a taxa sobe, o preço tende a cair. Títulos mais longos e sem cupons "
+            "costumam reagir mais porque concentram o pagamento no vencimento."
+        )
+        st.caption(
+            "A simulação usa fluxos teóricos e capitalização anual. Não substitui o PU "
+            "oficial da ANBIMA ou do Tesouro, calendários de dias úteis, impostos, spread "
+            "de crédito, liquidez ou condições contratuais específicas."
+        )
+
+    coluna_estrutura, coluna_datas = st.columns(2)
+    with coluna_estrutura:
+        st.markdown("#### Estrutura do título")
+        indexador = st.selectbox(
+            "Indexador",
+            ["Prefixado", "IPCA + taxa real"],
+            key="rf_indexador",
+        )
+        emissor = st.selectbox(
+            "Referência",
+            ["Título público / referência teórica", "Título privado"],
+            key="rf_emissor",
+        )
+        estrutura = st.selectbox(
+            "Pagamento dos juros",
+            ["Sem cupom (bullet)", "Cupom semestral", "Cupom anual"],
+            key="rf_estrutura",
+        )
+        valor_nominal = st.number_input(
+            "Valor nominal de referência (R$)",
+            min_value=100.0,
+            value=1_000.0,
+            step=100.0,
+            key="rf_valor_nominal",
+        )
+        valor_investido = st.number_input(
+            "Valor investido (R$)",
+            min_value=1_000.0,
+            value=100_000.0,
+            step=10_000.0,
+            key="rf_valor_investido",
+        )
+
+    hoje = date.today()
+    vencimento_padrao = (pd.Timestamp(hoje) + pd.DateOffset(years=5)).date()
+    saida_padrao = (pd.Timestamp(hoje) + pd.DateOffset(years=1)).date()
+    with coluna_datas:
+        st.markdown("#### Datas e taxas")
+        data_compra = st.date_input("Data da compra", value=hoje, key="rf_data_compra")
+        data_vencimento = st.date_input(
+            "Vencimento", value=vencimento_padrao, key="rf_data_vencimento"
+        )
+        data_saida = st.date_input(
+            "Data da saída antecipada", value=saida_padrao, key="rf_data_saida"
+        )
+        rotulo_taxa = "Taxa real" if indexador == "IPCA + taxa real" else "Taxa nominal"
+        taxa_compra_pct = st.number_input(
+            f"{rotulo_taxa} na compra (% a.a.)",
+            min_value=-5.0,
+            max_value=40.0,
+            value=7.0 if indexador == "IPCA + taxa real" else 12.0,
+            step=0.1,
+            key="rf_taxa_compra",
+        )
+        taxa_saida_pct = st.number_input(
+            f"{rotulo_taxa} de mercado na saída (% a.a.)",
+            min_value=-5.0,
+            max_value=40.0,
+            value=6.0 if indexador == "IPCA + taxa real" else 11.0,
+            step=0.1,
+            key="rf_taxa_saida",
+        )
+
+    frequencia_meses = None
+    taxa_cupom_pct = 0.0
+    if estrutura != "Sem cupom (bullet)":
+        frequencia_meses = 6 if estrutura == "Cupom semestral" else 12
+        taxa_cupom_pct = st.number_input(
+            "Taxa anual do cupom (% a.a.)",
+            min_value=0.0,
+            max_value=30.0,
+            value=6.0,
+            step=0.1,
+            key="rf_taxa_cupom",
+        )
+
+    ipca_pct = 0.0
+    if indexador == "IPCA + taxa real":
+        ipca_pct = st.number_input(
+            "Hipótese de IPCA (% a.a.)",
+            min_value=-2.0,
+            max_value=20.0,
+            value=4.5,
+            step=0.1,
+            help="Usada para converter os fluxos reais em valores nominais estimados.",
+            key="rf_ipca",
+        )
+
+    if pd.Timestamp(data_vencimento) <= pd.Timestamp(data_compra):
+        st.error("O vencimento precisa ser posterior à data da compra.")
+        rodape_radar()
+        return
+    if not (
+        pd.Timestamp(data_compra)
+        < pd.Timestamp(data_saida)
+        <= pd.Timestamp(data_vencimento)
+    ):
+        st.error("A saída deve ocorrer depois da compra e até o vencimento.")
+        rodape_radar()
+        return
+
+    taxa_compra = taxa_compra_pct / 100
+    taxa_saida = taxa_saida_pct / 100
+    taxa_cupom = taxa_cupom_pct / 100
+    ipca_anual = ipca_pct / 100
+    fluxos = gerar_fluxos_titulo(
+        data_compra,
+        data_vencimento,
+        valor_nominal,
+        taxa_cupom,
+        frequencia_meses,
+    )
+    preco_compra_unitario = precificar_fluxos_titulo(
+        fluxos, data_compra, taxa_compra
+    )
+    unidades = valor_investido / preco_compra_unitario
+    fator_saida = (
+        fator_inflacao(data_compra, data_saida, ipca_anual)
+        if indexador == "IPCA + taxa real"
+        else 1.0
+    )
+    preco_saida_real = precificar_fluxos_titulo(fluxos, data_saida, taxa_saida)
+    preco_saida_unitario = preco_saida_real * fator_saida
+    preco_carrego_real = precificar_fluxos_titulo(fluxos, data_saida, taxa_compra)
+    preco_carrego_unitario = preco_carrego_real * fator_saida
+
+    fluxos_recebidos_unitario = 0.0
+    for fluxo in fluxos:
+        if pd.Timestamp(data_compra) < fluxo["data"] <= pd.Timestamp(data_saida):
+            fator_fluxo = (
+                fator_inflacao(data_compra, fluxo["data"], ipca_anual)
+                if indexador == "IPCA + taxa real"
+                else 1.0
+            )
+            fluxos_recebidos_unitario += (
+                fluxo["cupom"] + fluxo["principal"]
+            ) * fator_fluxo
+
+    valor_saida = (preco_saida_unitario + fluxos_recebidos_unitario) * unidades
+    valor_carrego = (preco_carrego_unitario + fluxos_recebidos_unitario) * unidades
+    retorno_total = valor_saida / valor_investido - 1
+    retorno_carrego = valor_carrego / valor_investido - 1
+    prazo_saida = anos_entre_datas(data_compra, data_saida)
+    retorno_anualizado = (
+        (1 + retorno_total) ** (1 / prazo_saida) - 1 if prazo_saida > 0 else 0.0
+    )
+    efeito_taxa = valor_saida - valor_carrego
+    duration_macaulay, duration_modificada, convexidade = metricas_risco_titulo(
+        fluxos, data_compra, taxa_compra
+    )
+    dv01_total = duration_modificada * valor_investido * 0.0001
+
+    st.markdown("### Resultado da simulação")
+    metricas_linha_1 = st.columns(4)
+    metricas_linha_1[0].metric("Preço teórico na compra", formatar_reais(preco_compra_unitario))
+    metricas_linha_1[1].metric("Valor estimado na saída", formatar_reais(valor_saida))
+    metricas_linha_1[2].metric("Retorno total", f"{retorno_total:.2%}")
+    metricas_linha_1[3].metric("Retorno anualizado", f"{retorno_anualizado:.2%}")
+    metricas_linha_2 = st.columns(5)
+    metricas_linha_2[0].metric("Duration Macaulay", f"{duration_macaulay:.2f} anos")
+    metricas_linha_2[1].metric("Duration modificada", f"{duration_modificada:.2f} anos")
+    metricas_linha_2[2].metric("Convexidade", f"{convexidade:.2f}")
+    metricas_linha_2[3].metric("DV01 da posição", formatar_reais(dv01_total))
+    metricas_linha_2[4].metric("Efeito da taxa na saída", formatar_reais(efeito_taxa))
+
+    with st.container(border=True):
+        st.markdown("#### De onde veio o resultado?")
+        colunas_resultado = st.columns(3)
+        colunas_resultado[0].metric("Retorno de carrego", f"{retorno_carrego:.2%}")
+        colunas_resultado[1].metric(
+            "Cupons/principal recebidos",
+            formatar_reais(fluxos_recebidos_unitario * unidades),
+        )
+        colunas_resultado[2].metric(
+            "Marcação a mercado",
+            f"{efeito_taxa / valor_investido:.2%}",
+            help="Diferença em relação ao cenário em que a taxa de compra permanecesse igual.",
+        )
+        st.caption("Os cupons recebidos são somados ao resultado sem hipótese de reinvestimento.")
+
+    cenarios = []
+    for choque_bps in range(-300, 301, 25):
+        taxa_cenario = max(-0.99, taxa_compra + choque_bps / 10_000)
+        preco_cenario = (
+            precificar_fluxos_titulo(fluxos, data_saida, taxa_cenario) * fator_saida
+        )
+        valor_cenario = (preco_cenario + fluxos_recebidos_unitario) * unidades
+        cenarios.append(
+            {
+                "choque_bps": choque_bps,
+                "taxa": taxa_cenario,
+                "impacto_preco": valor_cenario / valor_carrego - 1,
+                "retorno_total": valor_cenario / valor_investido - 1,
+                "valor_saida": valor_cenario,
+            }
+        )
+    tabela_cenarios = pd.DataFrame(cenarios)
+    fig_assimetria = go.Figure(
+        go.Scatter(
+            x=tabela_cenarios["taxa"] * 100,
+            y=tabela_cenarios["impacto_preco"] * 100,
+            mode="lines",
+            line={"color": "#1769e0", "width": 3},
+            fill="tozeroy",
+            fillcolor="rgba(23,105,224,0.10)",
+            hovertemplate="Taxa: %{x:.2f}% a.a.<br>Impacto: %{y:.2f}%<extra></extra>",
+        )
+    )
+    fig_assimetria.add_hline(y=0, line_color="#94a3b8", line_width=1)
+    fig_assimetria.add_vline(
+        x=taxa_compra_pct,
+        line_color="#0f9d78",
+        line_dash="dash",
+        annotation_text="Taxa de compra",
+    )
+    fig_assimetria.add_vline(
+        x=taxa_saida_pct,
+        line_color="#ff5a5f",
+        line_dash="dot",
+        annotation_text="Taxa escolhida na saída",
+    )
+    fig_assimetria.update_layout(
+        title="Assimetria do preço diante de mudanças na taxa",
+        height=470,
+        margin={"l": 25, "r": 25, "t": 75, "b": 55},
+        xaxis_title=f"{rotulo_taxa} de mercado na saída (% a.a.)",
+        yaxis_title="Impacto sobre o valor de carrego (%)",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        dragmode=False,
+        showlegend=False,
+    )
+    fig_assimetria.update_xaxes(gridcolor="#e2e8f0", fixedrange=True)
+    fig_assimetria.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0", fixedrange=True)
+    st.plotly_chart(
+        fig_assimetria,
+        width="stretch",
+        config={"displayModeBar": False, "displaylogo": False},
+    )
+    st.caption(
+        "A curvatura mostra a convexidade: em títulos sem opções, quedas e altas "
+        "iguais da taxa não produzem impactos perfeitamente simétricos no preço."
+    )
+
+    choques_tabela = {-200, -100, -50, 0, 50, 100, 200}
+    tabela_resumo = tabela_cenarios[
+        tabela_cenarios["choque_bps"].isin(choques_tabela)
+    ].copy()
+    tabela_resumo["Cenário"] = tabela_resumo["choque_bps"].map(
+        lambda valor: "Taxa mantida" if valor == 0 else f"{valor:+.0f} bps"
+    )
+    tabela_resumo["Taxa na saída"] = tabela_resumo["taxa"]
+    tabela_resumo["Impacto da taxa"] = tabela_resumo["impacto_preco"]
+    tabela_resumo["Retorno total"] = tabela_resumo["retorno_total"]
+    tabela_resumo["Valor estimado"] = tabela_resumo["valor_saida"]
+    st.markdown("#### Cenários de taxa")
+    st.dataframe(
+        tabela_resumo[
+            ["Cenário", "Taxa na saída", "Impacto da taxa", "Retorno total", "Valor estimado"]
+        ],
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Taxa na saída": st.column_config.NumberColumn(format="percent"),
+            "Impacto da taxa": st.column_config.NumberColumn(format="percent"),
+            "Retorno total": st.column_config.NumberColumn(format="percent"),
+            "Valor estimado": st.column_config.NumberColumn(format="R$ %.2f"),
+        },
+    )
+
+    tabela_fluxos = []
+    for fluxo in fluxos:
+        fator_fluxo = (
+            fator_inflacao(data_compra, fluxo["data"], ipca_anual)
+            if indexador == "IPCA + taxa real"
+            else 1.0
+        )
+        tabela_fluxos.append(
+            {
+                "Data": fluxo["data"],
+                "Cupom estimado": fluxo["cupom"] * fator_fluxo * unidades,
+                "Principal estimado": fluxo["principal"] * fator_fluxo * unidades,
+            }
+        )
+    with st.expander("Fluxo de pagamentos", expanded=False):
+        st.dataframe(
+            pd.DataFrame(tabela_fluxos),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Data": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                "Cupom estimado": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Principal estimado": st.column_config.NumberColumn(format="R$ %.2f"),
+            },
+        )
+
+    if emissor == "Título privado":
+        st.warning(
+            "Em títulos privados, a taxa informada deve representar a taxa total exigida "
+            "pelo mercado. A simulação não estima inadimplência, spread de crédito, "
+            "liquidez, resgate antecipado ou cláusulas específicas."
+        )
+    rodape_radar()
+
+
 aplicar_identidade_visual()
 
 with st.sidebar:
@@ -2663,7 +3086,7 @@ with st.sidebar:
     )
     pagina_atual = st.radio(
         "Navegação",
-        ["Início", "Análise de índices", "Fundos"],
+        ["Início", "Análise de índices", "Fundos", "Renda fixa"],
         key="pagina_radar",
     )
 
@@ -2673,6 +3096,10 @@ if pagina_atual == "Início":
 
 if pagina_atual == "Fundos":
     pagina_fundos()
+    st.stop()
+
+if pagina_atual == "Renda fixa":
+    pagina_renda_fixa()
     st.stop()
 
 
