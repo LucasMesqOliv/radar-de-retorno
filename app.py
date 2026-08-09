@@ -2358,6 +2358,30 @@ def renderizar_analise_completa_fundos(
             key=f"janela_fundos_{'_'.join(cnpjs)}",
         )
         meses_janela = opcoes_janela[janela_escolhida]
+        principal = nomes_fundos[0]
+        with st.container(border=True):
+            st.markdown("#### 💡 Por que olhar janelas móveis?")
+            st.write(
+                "Olhar o retorno entre apenas duas datas é como tirar uma fotografia: "
+                "o resultado pode parecer muito bom ou ruim simplesmente por causa do "
+                "momento escolhido."
+            )
+            st.write(
+                f"Aqui repetimos a análise como se a aplicação tivesse começado no "
+                f"fechamento de cada mês e permanecido por {janela_escolhida.lower()}. "
+                "Assim, conseguimos observar se o resultado foi consistente em vários "
+                "momentos de entrada."
+            )
+            st.write(
+                f"Quando dizemos que **{principal} (principal) venceu**, significa que "
+                "ele entregou um retorno maior que o fundo ou benchmark comparado naquela "
+                "janela. Por exemplo, 70% de vitória significa que ele ganhou em 7 de cada "
+                "10 períodos históricos comparáveis."
+            )
+            st.caption(
+                "Essa análise ajuda a entender a consistência do histórico, mas não "
+                "garante que o mesmo comportamento se repetirá no futuro."
+            )
         grafico_janelas, janelas = criar_janelas_moveis_fundos(
             series_janelas, meses_janela
         )
@@ -2392,7 +2416,6 @@ def renderizar_analise_completa_fundos(
                     "Melhor janela": st.column_config.NumberColumn(format="percent"),
                 },
             )
-            principal = nomes_fundos[0]
             frequencia = calcular_frequencia_vitorias_janelas(janelas, principal)
             if frequencia.empty:
                 st.info(
