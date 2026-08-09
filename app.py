@@ -2798,13 +2798,38 @@ def pagina_renda_fixa():
         )
 
     hoje = date.today()
-    vencimento_padrao = (pd.Timestamp(hoje) + pd.DateOffset(years=5)).date()
-    saida_padrao = (pd.Timestamp(hoje) + pd.DateOffset(years=1)).date()
     with coluna_datas:
         st.markdown("#### Datas e taxas")
         data_compra = st.date_input("Data da compra", value=hoje, key="rf_data_compra")
-        data_vencimento = st.date_input(
-            "Vencimento", value=vencimento_padrao, key="rf_data_vencimento"
+        modo_vencimento = st.radio(
+            "Definir vencimento por",
+            ["Prazo desejado", "Data específica"],
+            horizontal=True,
+            key="rf_modo_vencimento",
+        )
+        if modo_vencimento == "Prazo desejado":
+            prazo_vencimento_anos = st.number_input(
+                "Prazo até o vencimento (anos)",
+                min_value=1,
+                max_value=50,
+                value=10,
+                step=1,
+                key="rf_prazo_vencimento",
+            )
+            data_vencimento = (
+                pd.Timestamp(data_compra)
+                + pd.DateOffset(years=int(prazo_vencimento_anos))
+            ).date()
+            st.caption(f"Vencimento calculado: {data_vencimento:%d/%m/%Y}")
+        else:
+            data_vencimento = st.date_input(
+                "Data específica de vencimento",
+                value=date(2065, 5, 15),
+                key="rf_data_vencimento",
+            )
+        saida_padrao = min(
+            (pd.Timestamp(data_compra) + pd.DateOffset(years=1)).date(),
+            data_vencimento,
         )
         data_saida = st.date_input(
             "Data da saída antecipada", value=saida_padrao, key="rf_data_saida"
@@ -2961,40 +2986,105 @@ def pagina_renda_fixa():
             }
         )
     tabela_cenarios = pd.DataFrame(cenarios)
-    fig_assimetria = go.Figure(
-        go.Scatter(
-            x=tabela_cenarios["taxa"] * 100,
-            y=tabela_cenarios["impacto_preco"] * 100,
-            mode="lines",
-            line={"color": "#1769e0", "width": 3},
-            fill="tozeroy",
-            fillcolor="rgba(23,105,224,0.10)",
-            hovertemplate="Taxa: %{x:.2f}% a.a.<br>Impacto: %{y:.2f}%<extra></extra>",
-        )
+    st.markdown("### Sensibilidade por vencimento")
+    anos_disponiveis = sorted(
+        {
+            *range(max(2030, pd.Timestamp(data_compra).year + 1), 2076, 5),
+            pd.Timestamp(data_vencimento).year,
+        }
     )
-    fig_assimetria.add_hline(y=0, line_color="#94a3b8", line_width=1)
+    anos_padrao = sorted(
+        {
+            ano
+            for ano in [
+                pd.Timestamp(data_vencimento).year,
+                2035,
+                2045,
+                2055,
+                2065,
+            ]
+            if ano in anos_disponiveis
+        }
+    )
+    anos_sensibilidade = st.multiselect(
+        "Vencimentos comparados no gráfico",
+        anos_disponiveis,
+        default=anos_padrao,
+        key="rf_anos_sensibilidade",
+    )
+    if not anos_sensibilidade:
+        anos_sensibilidade = [pd.Timestamp(data_vencimento).year]
+
+    cores_sensibilidade = [
+        "#119bb5",
+        "#e62b55",
+        "#7c3aed",
+        "#0f9d78",
+        "#e2a126",
+        "#1769e0",
+    ]
+    fig_assimetria = go.Figure()
+    for indice, ano_vencimento in enumerate(sorted(anos_sensibilidade, reverse=True)):
+        if ano_vencimento == pd.Timestamp(data_vencimento).year:
+            vencimento_cenario = pd.Timestamp(data_vencimento)
+            rotulo_vencimento = f"Selecionado · {ano_vencimento}"
+        else:
+            vencimento_cenario = pd.Timestamp(data_vencimento) + pd.DateOffset(
+                years=ano_vencimento - pd.Timestamp(data_vencimento).year
+            )
+            rotulo_vencimento = f"Vencimento {ano_vencimento}"
+        if vencimento_cenario <= pd.Timestamp(data_compra):
+            continue
+        fluxos_cenario = gerar_fluxos_titulo(
+            data_compra,
+            vencimento_cenario,
+            valor_nominal,
+            taxa_cupom,
+            frequencia_meses,
+        )
+        preco_referencia = precificar_fluxos_titulo(
+            fluxos_cenario, data_compra, taxa_compra
+        )
+        variacoes = []
+        for taxa_cenario in tabela_cenarios["taxa"]:
+            preco_cenario = precificar_fluxos_titulo(
+                fluxos_cenario, data_compra, float(taxa_cenario)
+            )
+            variacoes.append(preco_cenario / preco_referencia - 1)
+        fig_assimetria.add_trace(
+            go.Scatter(
+                x=tabela_cenarios["taxa"] * 100,
+                y=pd.Series(variacoes) * 100,
+                mode="lines+markers",
+                name=rotulo_vencimento,
+                line={
+                    "color": cores_sensibilidade[indice % len(cores_sensibilidade)],
+                    "width": 2.8,
+                },
+                marker={"size": 5},
+                hovertemplate=(
+                    f"{rotulo_vencimento}<br>Taxa: %{{x:.2f}}% a.a."
+                    "<br>Variação do preço: %{y:.2f}%<extra></extra>"
+                ),
+            )
+        )
+    fig_assimetria.add_hline(y=0, line_color="#64748b", line_width=1.2)
     fig_assimetria.add_vline(
         x=taxa_compra_pct,
-        line_color="#0f9d78",
+        line_color="#e2a126",
         line_dash="dash",
-        annotation_text="Taxa de compra",
-    )
-    fig_assimetria.add_vline(
-        x=taxa_saida_pct,
-        line_color="#ff5a5f",
-        line_dash="dot",
-        annotation_text="Taxa escolhida na saída",
+        annotation_text=f"Taxa atual · {taxa_compra_pct:.2f}%",
     )
     fig_assimetria.update_layout(
-        title="Assimetria do preço diante de mudanças na taxa",
-        height=470,
+        title="Análise de sensibilidade por prazo",
+        height=540,
         margin={"l": 25, "r": 25, "t": 75, "b": 55},
-        xaxis_title=f"{rotulo_taxa} de mercado na saída (% a.a.)",
-        yaxis_title="Impacto sobre o valor de carrego (%)",
+        xaxis_title=f"{rotulo_taxa} de mercado (% a.a.)",
+        yaxis_title="Variação do preço (%)",
         plot_bgcolor="white",
         paper_bgcolor="white",
         dragmode=False,
-        showlegend=False,
+        legend={"orientation": "v", "x": 1.01, "y": 1, "xanchor": "left"},
     )
     fig_assimetria.update_xaxes(gridcolor="#e2e8f0", fixedrange=True)
     fig_assimetria.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0", fixedrange=True)
@@ -3004,8 +3094,9 @@ def pagina_renda_fixa():
         config={"displayModeBar": False, "displaylogo": False},
     )
     st.caption(
-        "A curvatura mostra a convexidade: em títulos sem opções, quedas e altas "
-        "iguais da taxa não produzem impactos perfeitamente simétricos no preço."
+        "O gráfico recalcula o preço hoje para diferentes taxas, mantendo a mesma "
+        "estrutura de cupom. Quanto mais distante o vencimento, maior tende a ser a "
+        "duration e a sensibilidade. A curvatura representa a convexidade."
     )
 
     choques_tabela = {-200, -100, -50, 0, 50, 100, 200}
