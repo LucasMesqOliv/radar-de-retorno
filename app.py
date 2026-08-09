@@ -2152,13 +2152,44 @@ def renderizar_fichas_fundos(cadastro, cnpjs, extrato, historico):
                 st.markdown(ficha, unsafe_allow_html=True)
 
 
+def recortar_series_fundos(
+    series: dict[str, pd.Series],
+    meses: int | None,
+) -> dict[str, pd.Series]:
+    series_validas = {
+        nome: serie.dropna().sort_index()
+        for nome, serie in series.items()
+        if not serie.dropna().empty
+    }
+    if not series_validas or meses is None:
+        return series_validas
+    data_final_comum = min(serie.index.max() for serie in series_validas.values())
+    data_inicial = data_final_comum - pd.DateOffset(months=meses)
+    return {
+        nome: serie[(serie.index >= data_inicial) & (serie.index <= data_final_comum)]
+        for nome, serie in series_validas.items()
+    }
+
+
 def renderizar_analise_completa_fundos(
     cadastro,
     cnpjs,
     benchmarks,
-    meses_historico,
-    rotulo_historico,
+    periodos_analise,
 ):
+    rotulo_rentabilidade, meses_rentabilidade = periodos_analise["rentabilidade"]
+    rotulo_risco, meses_risco = periodos_analise["risco"]
+    rotulo_janelas, meses_janelas = periodos_analise["janelas"]
+    periodos_solicitados = [
+        meses_rentabilidade,
+        meses_risco,
+        meses_janelas,
+    ]
+    meses_historico = (
+        None
+        if any(periodo is None for periodo in periodos_solicitados)
+        else max(periodos_solicitados)
+    )
     data_inicio_comum = None
     if meses_historico is None:
         datas_constituicao = cadastro.loc[
@@ -2193,7 +2224,7 @@ def renderizar_analise_completa_fundos(
             renderizar_fichas_fundos(cadastro, cnpjs, extrato, historico_vazio)
             st.warning(
                 "A base pública de Informe Diário da CVM não disponibilizou cotas "
-                f"para este fundo no período “{rotulo_historico}”. Isso não significa que o fundo "
+                "para este fundo nos períodos selecionados. Isso não significa que o fundo "
                 "não possua histórico em outras bases. Tente ampliar o período; sem "
                 "cotas públicas no intervalo, os gráficos não podem ser calculados."
             )
@@ -2204,12 +2235,28 @@ def renderizar_analise_completa_fundos(
         )
 
     nomes_fundos = list(series_completas)[: len(cnpjs)]
-    series_exibidas = {
+    series_exibidas_completas = {
         nome: serie
         for nome, serie in series_completas.items()
         if nome in nomes_fundos or nome in benchmarks
     }
-    if not series_exibidas or any(serie.empty for serie in series_exibidas.values()):
+    series_rentabilidade = recortar_series_fundos(
+        series_exibidas_completas, meses_rentabilidade
+    )
+    series_risco_completas = recortar_series_fundos(series_completas, meses_risco)
+    series_risco = {
+        nome: serie
+        for nome, serie in series_risco_completas.items()
+        if nome in nomes_fundos or nome in benchmarks
+    }
+    series_janelas = recortar_series_fundos(
+        series_exibidas_completas, meses_janelas
+    )
+    conjuntos_series = [series_rentabilidade, series_risco, series_janelas]
+    if any(
+        not conjunto or any(serie.empty for serie in conjunto.values())
+        for conjunto in conjuntos_series
+    ):
         st.warning("Não há histórico comum suficiente para a seleção realizada.")
         return
 
@@ -2239,26 +2286,31 @@ def renderizar_analise_completa_fundos(
 
     with st.expander("Rentabilidade", expanded=True):
         st.plotly_chart(
-            criar_grafico_evolucao_fundos(series_exibidas),
+            criar_grafico_evolucao_fundos(series_rentabilidade),
             width="stretch",
             config={"displayModeBar": False, "displaylogo": False},
         )
         st.markdown("#### Retornos por período")
         st.dataframe(
-            criar_tabela_periodos_fundos(series_exibidas),
+            criar_tabela_periodos_fundos(series_rentabilidade),
             hide_index=True,
             width="stretch",
         )
-        data_inicial = max(serie.index.min() for serie in series_exibidas.values())
-        data_final = min(serie.index.max() for serie in series_exibidas.values())
+        data_inicial_rentabilidade = max(
+            serie.index.min() for serie in series_rentabilidade.values()
+        )
+        data_final_rentabilidade = min(
+            serie.index.max() for serie in series_rentabilidade.values()
+        )
         st.caption(
-            f"Séries comparadas em uma base comum, de {data_inicial:%d/%m/%Y} a "
-            f"{data_final:%d/%m/%Y}. O retorno acumulado começa em 0%."
+            f"Período da rentabilidade: {rotulo_rentabilidade}. Séries comparadas "
+            f"de {data_inicial_rentabilidade:%d/%m/%Y} a "
+            f"{data_final_rentabilidade:%d/%m/%Y}. O retorno acumulado começa em 0%."
         )
 
     with st.expander("Análise de risco", expanded=False):
         st.markdown("#### Volatilidade e índice de Sharpe")
-        metricas = calcular_metricas_risco_fundos(series_completas)
+        metricas = calcular_metricas_risco_fundos(series_risco_completas)
         if "CDI" not in benchmarks:
             metricas = metricas[metricas["Ativo"].ne("CDI")]
         st.dataframe(
@@ -2274,15 +2326,18 @@ def renderizar_analise_completa_fundos(
                 "Pior dia": st.column_config.NumberColumn(format="percent"),
             },
         )
+        data_inicial_risco = max(serie.index.min() for serie in series_risco.values())
+        data_final_risco = min(serie.index.max() for serie in series_risco.values())
         st.caption(
-            f"Período analisado: {data_inicial:%d/%m/%Y} a {data_final:%d/%m/%Y}. "
+            f"Período do risco: {rotulo_risco}, de {data_inicial_risco:%d/%m/%Y} "
+            f"a {data_final_risco:%d/%m/%Y}. "
             "Volatilidade e Sharpe anualizados com 252 dias úteis. O Sharpe considera "
             "o excesso de retorno diário sobre o CDI; maior queda é o drawdown máximo."
         )
         aba_volatilidade, aba_drawdown = st.tabs(["Volatilidade", "Drawdown"])
         with aba_volatilidade:
             st.plotly_chart(
-                criar_grafico_volatilidade_fundos(series_exibidas),
+                criar_grafico_volatilidade_fundos(series_risco),
                 width="stretch",
                 config={"displayModeBar": False, "displaylogo": False},
             )
@@ -2293,15 +2348,17 @@ def renderizar_analise_completa_fundos(
             )
         with aba_drawdown:
             st.plotly_chart(
-                criar_grafico_drawdown_fundos(series_exibidas),
+                criar_grafico_drawdown_fundos(series_risco),
                 width="stretch",
                 config={"displayModeBar": False, "displaylogo": False},
             )
 
     with st.expander("Janelas móveis", expanded=False):
+        data_inicial_janelas = max(serie.index.min() for serie in series_janelas.values())
+        data_final_janelas = min(serie.index.max() for serie in series_janelas.values())
         st.caption(
-            f"Intervalo histórico usado: {data_inicial:%d/%m/%Y} a {data_final:%d/%m/%Y} "
-            f"({rotulo_historico} selecionado no topo). "
+            f"Intervalo histórico usado: {data_inicial_janelas:%d/%m/%Y} a "
+            f"{data_final_janelas:%d/%m/%Y} ({rotulo_janelas}). "
             "Cada ponto representa uma entrada no fechamento de um mês."
         )
         opcoes_janela = {
@@ -2313,9 +2370,9 @@ def renderizar_analise_completa_fundos(
             "3 anos": 36,
             "5 anos": 60,
         }
-        if meses_historico is not None and meses_historico <= 3:
+        if meses_janelas is not None and meses_janelas <= 3:
             indice_janela_padrao = 0
-        elif meses_historico is not None and meses_historico <= 6:
+        elif meses_janelas is not None and meses_janelas <= 6:
             indice_janela_padrao = 1
         else:
             indice_janela_padrao = 3
@@ -2327,7 +2384,7 @@ def renderizar_analise_completa_fundos(
         )
         meses_janela = opcoes_janela[janela_escolhida]
         grafico_janelas, janelas = criar_janelas_moveis_fundos(
-            series_exibidas, meses_janela
+            series_janelas, meses_janela
         )
         if not any(not serie.empty for serie in janelas.values()):
             st.info("Escolha uma janela menor ou um período histórico maior.")
@@ -2400,6 +2457,40 @@ def renderizar_analise_completa_fundos(
                 )
 
 
+def selecionar_periodos_analise_fundos(opcoes_periodo, prefixo):
+    st.markdown("##### Períodos de cada análise")
+    coluna_rentabilidade, coluna_risco, coluna_janelas = st.columns(3)
+    with coluna_rentabilidade:
+        periodo_rentabilidade = st.selectbox(
+            "Rentabilidade",
+            list(opcoes_periodo),
+            index=3,
+            key=f"{prefixo}_periodo_rentabilidade",
+        )
+    with coluna_risco:
+        periodo_risco = st.selectbox(
+            "Volatilidade, Sharpe e drawdown",
+            list(opcoes_periodo),
+            index=2,
+            key=f"{prefixo}_periodo_risco",
+        )
+    with coluna_janelas:
+        periodo_janelas = st.selectbox(
+            "Histórico das janelas móveis",
+            list(opcoes_periodo),
+            index=3,
+            key=f"{prefixo}_periodo_janelas",
+        )
+    return {
+        "rentabilidade": (
+            periodo_rentabilidade,
+            opcoes_periodo[periodo_rentabilidade],
+        ),
+        "risco": (periodo_risco, opcoes_periodo[periodo_risco]),
+        "janelas": (periodo_janelas, opcoes_periodo[periodo_janelas]),
+    }
+
+
 def pagina_fundos():
     cabecalho_contextual("Fundos de investimento", "Dados oficiais da CVM")
     st.markdown(
@@ -2444,15 +2535,19 @@ def pagina_fundos():
 
     with aba_pesquisa:
         cnpj = seletor_fundo_cvm(cadastro, "Pesquise por nome ou CNPJ", "analise_individual")
-        coluna_periodo, coluna_benchmark = st.columns([1, 2])
-        with coluna_periodo:
-            periodo = st.selectbox(
-                "Histórico do gráfico", list(opcoes_periodo), index=2, key="periodo_fundo_individual"
-            )
-        with coluna_benchmark:
-            benchmarks = st.multiselect(
-                "Comparar também com", opcoes_benchmark, default=["CDI"], key="bench_individual"
-            )
+        benchmarks = st.multiselect(
+            "Comparar também com",
+            opcoes_benchmark,
+            default=["CDI"],
+            key="bench_individual",
+        )
+        periodos_analise = selecionar_periodos_analise_fundos(
+            opcoes_periodo, "individual"
+        )
+        valores_periodos = tuple(
+            periodos_analise[chave][1]
+            for chave in ["rentabilidade", "risco", "janelas"]
+        )
         analisar = st.button(
             "Gerar análise completa",
             type="primary",
@@ -2462,10 +2557,10 @@ def pagina_fundos():
         )
         if analisar:
             st.session_state["analise_fundo_individual"] = (
-                cnpj, tuple(benchmarks), opcoes_periodo[periodo]
+                cnpj, tuple(benchmarks), *valores_periodos
             )
         configuracao = st.session_state.get("analise_fundo_individual")
-        if configuracao == (cnpj, tuple(benchmarks), opcoes_periodo[periodo]):
+        if configuracao == (cnpj, tuple(benchmarks), *valores_periodos):
             try:
                 cadastro_selecionado = (
                     cadastro[cadastro["cnpj"].eq(cnpj)].copy()
@@ -2476,8 +2571,7 @@ def pagina_fundos():
                     cadastro_selecionado,
                     [cnpj],
                     benchmarks,
-                    opcoes_periodo[periodo],
-                    periodo,
+                    periodos_analise,
                 )
             except Exception as erro:
                 st.error("Não foi possível montar a análise completa deste fundo.")
@@ -2500,15 +2594,19 @@ def pagina_fundos():
         cnpjs = list(dict.fromkeys(cnpj for cnpj in selecionados if cnpj))
         if len(cnpjs) < len([cnpj for cnpj in selecionados if cnpj]):
             st.warning("Um fundo repetido será considerado apenas uma vez.")
-        coluna_periodo, coluna_benchmark = st.columns([1, 2])
-        with coluna_periodo:
-            periodo = st.selectbox(
-                "Histórico do gráfico", list(opcoes_periodo), index=2, key="periodo_comparacao_fundos"
-            )
-        with coluna_benchmark:
-            benchmarks = st.multiselect(
-                "Benchmarks", opcoes_benchmark, default=["CDI"], key="bench_comparacao_fundos"
-            )
+        benchmarks = st.multiselect(
+            "Benchmarks",
+            opcoes_benchmark,
+            default=["CDI"],
+            key="bench_comparacao_fundos",
+        )
+        periodos_analise = selecionar_periodos_analise_fundos(
+            opcoes_periodo, "comparacao"
+        )
+        valores_periodos = tuple(
+            periodos_analise[chave][1]
+            for chave in ["rentabilidade", "risco", "janelas"]
+        )
         comparar = st.button(
             "Comparar seleção",
             type="primary",
@@ -2518,10 +2616,10 @@ def pagina_fundos():
         )
         if comparar:
             st.session_state["analise_comparacao_fundos"] = (
-                tuple(cnpjs), tuple(benchmarks), opcoes_periodo[periodo]
+                tuple(cnpjs), tuple(benchmarks), *valores_periodos
             )
         configuracao = st.session_state.get("analise_comparacao_fundos")
-        if configuracao == (tuple(cnpjs), tuple(benchmarks), opcoes_periodo[periodo]):
+        if configuracao == (tuple(cnpjs), tuple(benchmarks), *valores_periodos):
             try:
                 cadastro_selecionado = (
                     cadastro[cadastro["cnpj"].isin(cnpjs)].copy()
@@ -2532,8 +2630,7 @@ def pagina_fundos():
                     cadastro_selecionado,
                     cnpjs,
                     benchmarks,
-                    opcoes_periodo[periodo],
-                    periodo,
+                    periodos_analise,
                 )
             except Exception as erro:
                 st.error("Não foi possível concluir a comparação dos fundos.")
