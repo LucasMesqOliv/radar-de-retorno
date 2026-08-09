@@ -564,34 +564,45 @@ def baixar_arquivo_cvm(
     pasta_cache = Path(tempfile.gettempdir()) / "radar_retorno_cvm"
     pasta_cache.mkdir(parents=True, exist_ok=True)
     arquivo = pasta_cache / nome
-    atualizado = (
+    cache_valido = (
         arquivo.exists()
         and arquivo.stat().st_size > 1_000
+        and (not validar_zip or zipfile.is_zipfile(arquivo))
+    )
+    atualizado = (
+        cache_valido
         and time.time() - arquivo.stat().st_mtime < validade_segundos
     )
     if atualizado:
         return arquivo
 
-    resposta = requests.get(
-        url,
-        headers={"User-Agent": "Radar-de-Retorno/1.0"},
-        timeout=(15, 180),
-        stream=True,
-    )
-    resposta.raise_for_status()
-    with tempfile.NamedTemporaryFile(
-        mode="wb", dir=pasta_cache, prefix=f"{nome}.", suffix=".part", delete=False
-    ) as temporario:
-        for bloco in resposta.iter_content(chunk_size=1024 * 1024):
-            if bloco:
-                temporario.write(bloco)
-        caminho_temporario = Path(temporario.name)
+    caminho_temporario = None
+    try:
+        resposta = requests.get(
+            url,
+            headers={"User-Agent": "Radar-de-Retorno/1.0"},
+            timeout=(15, 180),
+            stream=True,
+        )
+        resposta.raise_for_status()
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=pasta_cache, prefix=f"{nome}.", suffix=".part", delete=False
+        ) as temporario:
+            for bloco in resposta.iter_content(chunk_size=1024 * 1024):
+                if bloco:
+                    temporario.write(bloco)
+            caminho_temporario = Path(temporario.name)
 
-    if validar_zip and not zipfile.is_zipfile(caminho_temporario):
-        caminho_temporario.unlink(missing_ok=True)
-        raise RuntimeError("A CVM retornou um arquivo inválido.")
-    caminho_temporario.replace(arquivo)
-    return arquivo
+        if validar_zip and not zipfile.is_zipfile(caminho_temporario):
+            raise RuntimeError("A CVM retornou um arquivo inválido.")
+        caminho_temporario.replace(arquivo)
+        return arquivo
+    except Exception:
+        if caminho_temporario is not None:
+            caminho_temporario.unlink(missing_ok=True)
+        if cache_valido:
+            return arquivo
+        raise
 
 
 def preparar_cadastro_fundos(cadastro: pd.DataFrame) -> pd.DataFrame:
@@ -1442,12 +1453,51 @@ def calcular_metricas_risco_fundos(
     return pd.DataFrame(linhas)
 
 
-def criar_grafico_volatilidade_fundos(series: dict[str, pd.Series]):
+def criar_grafico_retorno_movel_fundos(
+    series: dict[str, pd.Series], dias_janela: int = 21
+):
+    cores = ["#1769e0", "#19c2d8", "#ff6b4a", "#7656d6", "#0f9d78", "#e2a126", "#64748b"]
+    fig = go.Figure()
+    for (nome, serie), cor in zip(series.items(), cores):
+        serie = serie.dropna().sort_index()
+        retorno_movel = serie.pct_change(periods=dias_janela).mul(100).dropna()
+        fig.add_trace(
+            go.Scatter(
+                x=retorno_movel.index,
+                y=retorno_movel.values,
+                mode="lines",
+                name=nome,
+                line={"width": 2.2, "color": cor},
+                hovertemplate=(
+                    "%{x|%d/%m/%Y}<br>Retorno efetivo: %{y:.2f}%"
+                    f"<extra>{nome}</extra>"
+                ),
+            )
+        )
+    fig.add_hline(y=0, line_width=1, line_color="#94a3b8")
+    fig.update_layout(
+        title=f"Janela móvel de retorno efetivo · {dias_janela} dias úteis",
+        height=430,
+        margin={"l": 25, "r": 20, "t": 65, "b": 85},
+        hovermode="x unified",
+        dragmode=False,
+        legend={"orientation": "h", "y": -0.18, "x": 0.5, "xanchor": "center"},
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    fig.update_xaxes(showgrid=False, fixedrange=True)
+    fig.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0", fixedrange=True)
+    return fig
+
+
+def criar_grafico_volatilidade_fundos(
+    series: dict[str, pd.Series], dias_janela: int = 21
+):
     cores = ["#1769e0", "#19c2d8", "#ff6b4a", "#7656d6", "#0f9d78", "#e2a126", "#64748b"]
     fig = go.Figure()
     for (nome, serie), cor in zip(series.items(), cores):
         retornos = serie.dropna().sort_index().pct_change()
-        volatilidade = retornos.rolling(21, min_periods=15).std() * (252 ** 0.5) * 100
+        volatilidade = retornos.rolling(dias_janela).std() * (252 ** 0.5) * 100
         volatilidade = volatilidade.dropna()
         fig.add_trace(
             go.Scatter(
@@ -1463,7 +1513,7 @@ def criar_grafico_volatilidade_fundos(series: dict[str, pd.Series]):
             )
         )
     fig.update_layout(
-        title="Volatilidade móvel de 21 dias úteis",
+        title=f"Volatilidade móvel · {dias_janela} dias úteis",
         height=430,
         margin={"l": 25, "r": 20, "t": 65, "b": 85},
         hovermode="x unified",
@@ -2325,16 +2375,39 @@ def renderizar_analise_completa_fundos(
             "Volatilidade e Sharpe anualizados com 252 dias úteis. O Sharpe considera "
             "o excesso de retorno diário sobre o CDI; maior queda é o drawdown máximo."
         )
-        aba_volatilidade, aba_drawdown = st.tabs(["Volatilidade", "Drawdown"])
+        dias_janela_risco = int(
+            st.number_input(
+                "Janela móvel (dias úteis)",
+                min_value=2,
+                max_value=252,
+                value=21,
+                step=1,
+                key=f"janela_movel_risco_{'_'.join(cnpjs)}",
+            )
+        )
+        aba_retorno_movel, aba_volatilidade, aba_drawdown = st.tabs(
+            ["Retorno móvel", "Volatilidade", "Drawdown"]
+        )
+        with aba_retorno_movel:
+            st.plotly_chart(
+                criar_grafico_retorno_movel_fundos(series_risco, dias_janela_risco),
+                width="stretch",
+                config={"displayModeBar": False, "displaylogo": False},
+            )
+            st.caption(
+                "Como no Quantum, cada ponto mostra o retorno efetivo acumulado entre "
+                f"a data exibida e {dias_janela_risco} dias úteis antes. Esta medida não "
+                "é anualizada e pode ser positiva ou negativa."
+            )
         with aba_volatilidade:
             st.plotly_chart(
-                criar_grafico_volatilidade_fundos(series_risco),
+                criar_grafico_volatilidade_fundos(series_risco, dias_janela_risco),
                 width="stretch",
                 config={"displayModeBar": False, "displaylogo": False},
             )
             st.caption(
                 "O gráfico percorre todo o histórico selecionado e mostra, em cada data, "
-                "a volatilidade observada nos 21 dias úteis anteriores. A medida é "
+                f"a volatilidade observada nos {dias_janela_risco} dias úteis anteriores. A medida é "
                 "anualizada. A tabela acima continua usando todo o período selecionado."
             )
         with aba_drawdown:
