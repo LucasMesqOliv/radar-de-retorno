@@ -1361,44 +1361,6 @@ def calcular_metricas_risco_fundos(
     return pd.DataFrame(linhas)
 
 
-def criar_grafico_volatilidade_fundos(
-    series: dict[str, pd.Series],
-    dias_janela: int,
-):
-    cores = ["#1769e0", "#19c2d8", "#ff6b4a", "#7656d6", "#0f9d78", "#e2a126", "#64748b"]
-    fig = go.Figure()
-    for (nome, serie), cor in zip(series.items(), cores):
-        retornos = serie.dropna().sort_index().pct_change()
-        volatilidade = retornos.rolling(
-            dias_janela,
-            min_periods=max(10, dias_janela // 2),
-        ).std() * (252 ** 0.5) * 100
-        volatilidade = volatilidade.dropna()
-        fig.add_trace(
-            go.Scatter(
-                x=volatilidade.index,
-                y=volatilidade.values,
-                mode="lines",
-                name=nome,
-                line={"width": 2.2, "color": cor},
-                hovertemplate="%{x|%d/%m/%Y}<br>Volatilidade: %{y:.2f}% a.a.<extra></extra>",
-            )
-        )
-    fig.update_layout(
-        title=f"Volatilidade móvel · {dias_janela} dias úteis",
-        height=430,
-        margin={"l": 25, "r": 20, "t": 65, "b": 85},
-        hovermode="x unified",
-        dragmode=False,
-        legend={"orientation": "h", "y": -0.18, "x": 0.5, "xanchor": "center"},
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-    )
-    fig.update_xaxes(showgrid=False, fixedrange=True)
-    fig.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0", fixedrange=True)
-    return fig
-
-
 def criar_grafico_drawdown_fundos(series: dict[str, pd.Series]):
     cores = ["#1769e0", "#19c2d8", "#ff6b4a", "#7656d6", "#0f9d78", "#e2a126", "#64748b"]
     preenchimentos = [
@@ -2195,6 +2157,7 @@ def renderizar_analise_completa_fundos(
         )
 
     with st.expander("Análise de risco", expanded=False):
+        st.markdown("#### Volatilidade e índice de Sharpe")
         metricas = calcular_metricas_risco_fundos(series_completas)
         if "CDI" not in benchmarks:
             metricas = metricas[metricas["Ativo"].ne("CDI")]
@@ -2212,38 +2175,16 @@ def renderizar_analise_completa_fundos(
             },
         )
         st.caption(
+            f"Período analisado: {data_inicial:%d/%m/%Y} a {data_final:%d/%m/%Y}. "
             "Volatilidade e Sharpe anualizados com 252 dias úteis. O Sharpe considera "
             "o excesso de retorno diário sobre o CDI; maior queda é o drawdown máximo."
         )
-        st.markdown("#### Risco ao longo do tempo")
-        opcoes_volatilidade = {
-            "21 dias úteis": 21,
-            "63 dias úteis": 63,
-            "126 dias úteis": 126,
-            "252 dias úteis": 252,
-        }
-        periodo_volatilidade = st.selectbox(
-            "Janela da volatilidade móvel",
-            list(opcoes_volatilidade),
-            index=1,
-            key=f"volatilidade_fundos_{'_'.join(cnpjs)}",
+        st.markdown("#### Drawdown ao longo do período")
+        st.plotly_chart(
+            criar_grafico_drawdown_fundos(series_exibidas),
+            width="stretch",
+            config={"displayModeBar": False, "displaylogo": False},
         )
-        aba_volatilidade, aba_drawdown = st.tabs(["Volatilidade móvel", "Drawdown"])
-        with aba_volatilidade:
-            st.plotly_chart(
-                criar_grafico_volatilidade_fundos(
-                    series_exibidas,
-                    opcoes_volatilidade[periodo_volatilidade],
-                ),
-                width="stretch",
-                config={"displayModeBar": False, "displaylogo": False},
-            )
-        with aba_drawdown:
-            st.plotly_chart(
-                criar_grafico_drawdown_fundos(series_exibidas),
-                width="stretch",
-                config={"displayModeBar": False, "displaylogo": False},
-            )
 
     with st.expander("Janelas móveis", expanded=False):
         st.caption(
