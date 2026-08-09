@@ -1366,7 +1366,7 @@ def criar_grafico_volatilidade_fundos(series: dict[str, pd.Series]):
     fig = go.Figure()
     for (nome, serie), cor in zip(series.items(), cores):
         retornos = serie.dropna().sort_index().pct_change()
-        volatilidade = retornos.expanding(min_periods=20).std() * (252 ** 0.5) * 100
+        volatilidade = retornos.rolling(21, min_periods=15).std() * (252 ** 0.5) * 100
         volatilidade = volatilidade.dropna()
         fig.add_trace(
             go.Scatter(
@@ -1382,7 +1382,7 @@ def criar_grafico_volatilidade_fundos(series: dict[str, pd.Series]):
             )
         )
     fig.update_layout(
-        title="Volatilidade do período até cada data",
+        title="Volatilidade móvel de 21 dias úteis",
         height=430,
         margin={"l": 25, "r": 20, "t": 65, "b": 85},
         hovermode="x unified",
@@ -2222,10 +2222,9 @@ def renderizar_analise_completa_fundos(
                 config={"displayModeBar": False, "displaylogo": False},
             )
             st.caption(
-                "Cada ponto considera todos os retornos desde o início do período "
-                "selecionado até aquela data. O último ponto representa o período completo. "
-                "A medida é exibida em base anual, como é padrão de mercado, mas não fica "
-                "mais limitada aos últimos 63 dias."
+                "O gráfico percorre todo o histórico selecionado e mostra, em cada data, "
+                "a volatilidade observada nos 21 dias úteis anteriores. A medida é "
+                "anualizada. A tabela acima continua usando todo o período selecionado."
             )
         with aba_drawdown:
             st.plotly_chart(
