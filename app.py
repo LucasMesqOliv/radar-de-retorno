@@ -1418,6 +1418,164 @@ def criar_tabela_periodos_fundos(series: dict[str, pd.Series]) -> pd.DataFrame:
     return pd.DataFrame(linhas)
 
 
+def criar_tabela_retornos_mensais(
+    series: dict[str, pd.Series], limite_meses: int | None = 12
+) -> pd.DataFrame:
+    retornos_por_ativo = {}
+    for nome, serie in series.items():
+        serie = serie.dropna().sort_index()
+        if len(serie) < 2:
+            continue
+        retornos_diarios = serie.pct_change().dropna()
+        retornos_mensais = (1 + retornos_diarios).resample("ME").prod() - 1
+        retornos_por_ativo[nome] = retornos_mensais
+    if not retornos_por_ativo:
+        return pd.DataFrame()
+    tabela = pd.concat(retornos_por_ativo, axis=1).sort_index()
+    if limite_meses is not None:
+        tabela = tabela.tail(limite_meses)
+    tabela.index = tabela.index.strftime("%m/%Y")
+    tabela.index.name = "Mês"
+    return tabela.reset_index()
+
+
+def _retorno_entre_extremos(serie: pd.Series) -> float | None:
+    serie = serie.dropna().sort_index()
+    if len(serie) < 2 or serie.iloc[0] <= 0:
+        return None
+    return float(serie.iloc[-1] / serie.iloc[0] - 1)
+
+
+def criar_ranking_comparativo_fundos(
+    series_completas: dict[str, pd.Series],
+    series_selecionadas: dict[str, pd.Series],
+    nomes_fundos: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    linhas = []
+    for nome in nomes_fundos:
+        serie_completa = series_completas.get(nome, pd.Series(dtype=float))
+        serie_selecionada = series_selecionadas.get(nome, pd.Series(dtype=float))
+        retorno_12m = calcular_retorno_serie(serie_completa, meses=12)
+        retorno_ano = calcular_retorno_serie(serie_completa, inicio_calendario="ano")
+        serie_risco_12m = recortar_series_fundos({nome: serie_completa}, 12).get(
+            nome, pd.Series(dtype=float)
+        )
+        retornos_risco = serie_risco_12m.pct_change().dropna()
+        volatilidade_12m = (
+            float(retornos_risco.std() * (252 ** 0.5))
+            if len(retornos_risco) >= 2
+            else None
+        )
+        linhas.append(
+            {
+                "Fundo": nome,
+                "Rentabilidade 12 meses": (
+                    retorno_12m["retorno"] if retorno_12m is not None else None
+                ),
+                "Rentabilidade no ano": (
+                    retorno_ano["retorno"] if retorno_ano is not None else None
+                ),
+                "Rentabilidade selecionada": _retorno_entre_extremos(serie_selecionada),
+                "Volatilidade 12 meses": volatilidade_12m,
+            }
+        )
+    metricas = pd.DataFrame(linhas)
+    if metricas.empty:
+        return metricas, metricas
+
+    colunas_retorno = [
+        "Rentabilidade 12 meses",
+        "Rentabilidade no ano",
+        "Rentabilidade selecionada",
+    ]
+    posicoes = []
+    for _, linha in metricas.iterrows():
+        nome = linha["Fundo"]
+        notas = []
+        for coluna in colunas_retorno:
+            ranking = metricas[coluna].rank(ascending=False, method="min")
+            if pd.notna(linha[coluna]):
+                notas.append(float(ranking.loc[metricas["Fundo"].eq(nome)].iloc[0]))
+        ranking_vol = metricas["Volatilidade 12 meses"].rank(
+            ascending=True, method="min"
+        )
+        if pd.notna(linha["Volatilidade 12 meses"]):
+            notas.append(float(ranking_vol.loc[metricas["Fundo"].eq(nome)].iloc[0]))
+        posicoes.append(sum(notas) / len(notas) if notas else float("nan"))
+    metricas["_nota_risco_retorno"] = posicoes
+    ranking = metricas[["Fundo", "_nota_risco_retorno"]].copy()
+    ranking = ranking.sort_values(["_nota_risco_retorno", "Fundo"]).reset_index(drop=True)
+    ranking.insert(0, "Posição", range(1, len(ranking) + 1))
+    ranking["Avaliação"] = ranking["Posição"].map(
+        lambda posicao: (
+            "Melhor equilíbrio risco-retorno"
+            if posicao == 1
+            else "Equilíbrio intermediário"
+            if posicao < len(ranking)
+            else "Menor equilíbrio relativo"
+        )
+    )
+    ranking = ranking.drop(columns="_nota_risco_retorno")
+    return metricas.drop(columns="_nota_risco_retorno"), ranking
+
+
+def estilizar_mapa_ranking(tabela: pd.DataFrame):
+    colunas_retorno = {
+        "Rentabilidade 12 meses",
+        "Rentabilidade no ano",
+        "Rentabilidade selecionada",
+    }
+
+    def cores_coluna(coluna: pd.Series):
+        ascendente = coluna.name == "Volatilidade 12 meses"
+        ranking = coluna.rank(ascending=ascendente, method="min")
+        total = int(coluna.notna().sum())
+        estilos = []
+        for indice, valor in coluna.items():
+            if pd.isna(valor):
+                estilos.append("background-color: #eef2f6; color: #64748b")
+                continue
+            posicao = int(ranking.loc[indice])
+            if posicao == 1:
+                cor = "#b7e4c7"
+            elif total >= 4 and posicao == 2:
+                cor = "#d8edb5"
+            elif posicao < total:
+                cor = "#ffe69a"
+            else:
+                cor = "#f6b3b3"
+            estilos.append(f"background-color: {cor}; color: #071d39")
+        return estilos
+
+    colunas_metricas = [
+        coluna
+        for coluna in tabela.columns
+        if coluna in colunas_retorno or coluna == "Volatilidade 12 meses"
+    ]
+    return (
+        tabela.style.apply(cores_coluna, subset=colunas_metricas)
+        .format({coluna: "{:.2%}" for coluna in colunas_metricas}, na_rep="—")
+    )
+
+
+def estilizar_ranking_final(tabela: pd.DataFrame):
+    total = len(tabela)
+
+    def cor_linha(linha: pd.Series):
+        posicao = int(linha["Posição"])
+        if posicao == 1:
+            cor = "#b7e4c7"
+        elif total >= 4 and posicao == 2:
+            cor = "#d8edb5"
+        elif posicao < total:
+            cor = "#ffe69a"
+        else:
+            cor = "#f6b3b3"
+        return [f"background-color: {cor}; color: #071d39"] * len(linha)
+
+    return tabela.style.apply(cor_linha, axis=1)
+
+
 def calcular_metricas_risco_fundos(
     series: dict[str, pd.Series],
 ) -> pd.DataFrame:
@@ -2119,7 +2277,7 @@ def renderizar_fichas_fundos(cadastro, cnpjs, extrato, historico):
     )
 
     with st.expander("Informações dos fundos", expanded=True):
-        colunas = st.columns(min(2, len(cnpjs)))
+        colunas = st.columns(len(cnpjs) if len(cnpjs) > 2 else min(2, len(cnpjs)))
         for indice, cnpj in enumerate(cnpjs):
             fundo = cadastro[cadastro["cnpj"].eq(cnpj)].iloc[0]
             linha_extrato = extrato[extrato["cnpj"].eq(cnpj)]
@@ -2229,7 +2387,7 @@ def renderizar_analise_completa_fundos(
     meses_historico = (
         None
         if any(periodo is None for periodo in periodos_solicitados)
-        else max(periodos_solicitados)
+        else max([12 if len(cnpjs) > 1 else 0, *periodos_solicitados])
     )
     data_inicio_comum = None
     if meses_historico is None:
@@ -2337,6 +2495,25 @@ def renderizar_analise_completa_fundos(
             hide_index=True,
             width="stretch",
         )
+        st.markdown("#### Retornos mensais")
+        limite_meses_mensais = None if len(cnpjs) == 1 else 12
+        retornos_mensais = criar_tabela_retornos_mensais(
+            series_rentabilidade, limite_meses_mensais
+        )
+        st.dataframe(
+            retornos_mensais,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                coluna: st.column_config.NumberColumn(format="percent")
+                for coluna in retornos_mensais.columns
+                if coluna != "Mês"
+            },
+        )
+        st.caption(
+            "Na análise individual, a tabela percorre o período de rentabilidade "
+            "selecionado. Na comparação, são exibidos os últimos 12 meses disponíveis."
+        )
         data_inicial_rentabilidade = max(
             serie.index.min() for serie in series_rentabilidade.values()
         )
@@ -2348,6 +2525,37 @@ def renderizar_analise_completa_fundos(
             f"de {data_inicial_rentabilidade:%d/%m/%Y} a "
             f"{data_final_rentabilidade:%d/%m/%Y}. O retorno acumulado começa em 0%."
         )
+
+    if len(nomes_fundos) > 1:
+        with st.expander("Mapa de calor e ranking comparativo", expanded=True):
+            mapa_ranking, ranking_final = criar_ranking_comparativo_fundos(
+                series_completas,
+                series_rentabilidade,
+                nomes_fundos,
+            )
+            st.markdown("#### Mapa de calor das métricas")
+            st.dataframe(
+                estilizar_mapa_ranking(mapa_ranking),
+                hide_index=True,
+                width="stretch",
+            )
+            st.caption(
+                "As cores representam a posição relativa em cada coluna: verde indica "
+                "o melhor resultado, amarelo uma posição intermediária e vermelho o "
+                "menor resultado. Na volatilidade, o menor valor ocupa a melhor posição."
+            )
+            st.markdown("#### Ranking de equilíbrio risco-retorno")
+            st.dataframe(
+                estilizar_ranking_final(ranking_final),
+                hide_index=True,
+                width="stretch",
+            )
+            st.caption(
+                "O ranking é uma leitura comparativa, não uma recomendação: combina com "
+                "peso igual as posições de retorno em 12 meses, retorno no ano, retorno "
+                "do período selecionado e volatilidade em 12 meses. Retornos maiores e "
+                "volatilidade menor melhoram a colocação."
+            )
 
     with st.expander("Análise de risco", expanded=False):
         st.markdown("#### Volatilidade e índice de Sharpe")
