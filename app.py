@@ -1361,6 +1361,60 @@ def calcular_metricas_risco_fundos(
     return pd.DataFrame(linhas)
 
 
+def criar_grafico_metrica_risco(
+    metricas: pd.DataFrame,
+    coluna: str,
+    titulo: str,
+    percentual: bool = False,
+):
+    dados = metricas[["Ativo", coluna]].dropna().copy()
+    valores = dados[coluna] * 100 if percentual else dados[coluna]
+    cores = (
+        ["#1769e0"] * len(dados)
+        if percentual
+        else ["#0f9d78" if valor >= 0 else "#ff5a5f" for valor in valores]
+    )
+    textos = (
+        [f"{valor:.2f}%" for valor in valores]
+        if percentual
+        else [f"{valor:.2f}" for valor in valores]
+    )
+    fig = go.Figure(
+        go.Bar(
+            x=valores,
+            y=dados["Ativo"],
+            orientation="h",
+            marker_color=cores,
+            text=textos,
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate=(
+                "%{y}<br>Volatilidade: %{x:.2f}% a.a.<extra></extra>"
+                if percentual
+                else "%{y}<br>Sharpe vs. CDI: %{x:.2f}<extra></extra>"
+            ),
+        )
+    )
+    fig.update_layout(
+        title=titulo,
+        height=max(280, 62 * len(dados) + 120),
+        margin={"l": 20, "r": 55, "t": 65, "b": 35},
+        dragmode=False,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        showlegend=False,
+    )
+    fig.update_xaxes(
+        ticksuffix="%" if percentual else "",
+        gridcolor="#e2e8f0",
+        fixedrange=True,
+        zeroline=True,
+        zerolinecolor="#94a3b8",
+    )
+    fig.update_yaxes(autorange="reversed", fixedrange=True)
+    return fig
+
+
 def criar_grafico_drawdown_fundos(series: dict[str, pd.Series]):
     cores = ["#1769e0", "#19c2d8", "#ff6b4a", "#7656d6", "#0f9d78", "#e2a126", "#64748b"]
     preenchimentos = [
@@ -2179,12 +2233,38 @@ def renderizar_analise_completa_fundos(
             "Volatilidade e Sharpe anualizados com 252 dias úteis. O Sharpe considera "
             "o excesso de retorno diário sobre o CDI; maior queda é o drawdown máximo."
         )
-        st.markdown("#### Drawdown ao longo do período")
-        st.plotly_chart(
-            criar_grafico_drawdown_fundos(series_exibidas),
-            width="stretch",
-            config={"displayModeBar": False, "displaylogo": False},
+        aba_volatilidade, aba_drawdown = st.tabs(
+            ["Volatilidade e Sharpe", "Drawdown"]
         )
+        with aba_volatilidade:
+            coluna_volatilidade, coluna_sharpe = st.columns(2)
+            with coluna_volatilidade:
+                st.plotly_chart(
+                    criar_grafico_metrica_risco(
+                        metricas,
+                        "Volatilidade a.a.",
+                        "Volatilidade anualizada",
+                        percentual=True,
+                    ),
+                    width="stretch",
+                    config={"displayModeBar": False, "displaylogo": False},
+                )
+            with coluna_sharpe:
+                st.plotly_chart(
+                    criar_grafico_metrica_risco(
+                        metricas,
+                        "Sharpe vs. CDI",
+                        "Índice de Sharpe vs. CDI",
+                    ),
+                    width="stretch",
+                    config={"displayModeBar": False, "displaylogo": False},
+                )
+        with aba_drawdown:
+            st.plotly_chart(
+                criar_grafico_drawdown_fundos(series_exibidas),
+                width="stretch",
+                config={"displayModeBar": False, "displaylogo": False},
+            )
 
     with st.expander("Janelas móveis", expanded=False):
         st.caption(
