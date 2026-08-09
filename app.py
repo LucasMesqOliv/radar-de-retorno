@@ -1536,31 +1536,6 @@ def calcular_frequencia_vitorias_janelas(
     return pd.DataFrame(linhas)
 
 
-def criar_grafico_frequencia_vitorias(tabela: pd.DataFrame, principal: str):
-    fig = go.Figure(
-        go.Bar(
-            x=tabela["% de vitória do principal"] * 100,
-            y=tabela["Comparativo"],
-            orientation="h",
-            marker_color="#1769e0",
-            text=[f"{valor:.1%}" for valor in tabela["% de vitória do principal"]],
-            textposition="inside",
-            hovertemplate="%{y}<br>Vitórias: %{x:.1f}%<extra></extra>",
-        )
-    )
-    fig.update_layout(
-        title="Percentual de janelas em que o fundo principal venceu",
-        height=max(240, 90 + 54 * len(tabela)),
-        margin={"l": 25, "r": 25, "t": 65, "b": 35},
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        showlegend=False,
-    )
-    fig.update_xaxes(range=[0, 100], ticksuffix="%", gridcolor="#e2e8f0", fixedrange=True)
-    fig.update_yaxes(fixedrange=True)
-    return fig
-
-
 def criar_grafico_evolucao_fundos(series: dict[str, pd.Series]):
     cores = ["#1769e0", "#19c2d8", "#ff6b4a", "#7656d6", "#0f9d78", "#e2a126", "#64748b"]
     fig = go.Figure()
@@ -2425,36 +2400,35 @@ def renderizar_analise_completa_fundos(
                     "a frequência histórica de vitória."
                 )
             else:
-                st.markdown("#### Quantas vezes o fundo principal venceu?")
+                st.markdown(f"#### Quantas vezes {principal} (principal) venceu?")
                 st.caption(
-                    f"Série principal: {principal}. As janelas são mensais e sobrepostas, "
-                    "como na análise de índices."
+                    "As janelas são mensais e sobrepostas, como na análise de índices."
                 )
-                for _, linha in frequencia.iterrows():
-                    st.markdown(
-                        f"**Fundo principal × {linha['Comparativo']}:** o principal venceu "
-                        f"**{int(linha['Principal venceu'])} de {int(linha['Janelas'])} janelas "
-                        f"({linha['% de vitória do principal']:.1%})**; o comparativo venceu "
-                        f"{int(linha['Comparativo venceu'])}."
-                    )
+                for inicio in range(0, len(frequencia), 3):
+                    trecho = frequencia.iloc[inicio : inicio + 3]
+                    colunas_frequencia = st.columns(len(trecho))
+                    for coluna, (_, linha) in zip(
+                        colunas_frequencia, trecho.iterrows()
+                    ):
+                        vitorias = int(linha["Principal venceu"])
+                        total = int(linha["Janelas"])
+                        empates = int(linha["Empates"])
+                        derrotas = int(linha["Comparativo venceu"])
+                        coluna.metric(
+                            f"Venceu {linha['Comparativo']}",
+                            f"{linha['% de vitória do principal']:.1%}",
+                            f"{vitorias} de {total} janelas",
+                            delta_color="off",
+                        )
+                        coluna.caption(
+                            f"{linha['Comparativo']} venceu {derrotas}"
+                            + (f" · {empates} empates" if empates else "")
+                        )
                 if frequencia["Janelas"].min() < 12:
                     st.warning(
                         "A amostra possui menos de 12 janelas comparáveis. Percentuais "
                         "calculados com poucas observações devem ser interpretados com cautela."
                     )
-                st.plotly_chart(
-                    criar_grafico_frequencia_vitorias(frequencia, principal),
-                    width="stretch",
-                    config={"displayModeBar": False, "displaylogo": False},
-                )
-                st.dataframe(
-                    frequencia,
-                    hide_index=True,
-                    width="stretch",
-                    column_config={
-                        "% de vitória do principal": st.column_config.NumberColumn(format="percent"),
-                    },
-                )
 
 
 def selecionar_periodos_analise_fundos(opcoes_periodo, prefixo):
