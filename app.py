@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hmac
 from html import escape
 import importlib.util
@@ -26,6 +27,7 @@ from radar_database import (
     carregar_cadastro_fundos,
     carregar_cadastro_fundos_por_cnpj,
     carregar_cotas,
+    carregar_periodos_consultados,
     carregar_serie_mercado,
     contar_cadastro_fundos,
     periodo_foi_consultado,
@@ -1085,32 +1087,95 @@ def carregar_historico_fundos_cvm(
         periodo_inicial = inicio.to_period("M")
     else:
         periodo_inicial = periodo_final - meses
-    partes = []
+
     primeiro_ano_mensal = 2021
     ultimo_ano_historico = min(periodo_final.year, primeiro_ano_mensal - 1)
-    for ano in range(periodo_inicial.year, ultimo_ano_historico + 1):
-        try:
-            parte = carregar_informe_ano_cvm(ano, cnpjs)
-        except requests.HTTPError as erro:
-            if erro.response is not None and erro.response.status_code == 404:
-                continue
-            raise
-        if not parte.empty:
-            partes.append(parte)
-
+    anos_historicos = list(
+        range(periodo_inicial.year, ultimo_ano_historico + 1)
+    )
     inicio_mensal = max(
         periodo_inicial,
         pd.Period(f"{primeiro_ano_mensal}-01", freq="M"),
     )
-    for periodo in pd.period_range(inicio_mensal, periodo_final, freq="M"):
+    periodos_mensais = list(
+        pd.period_range(inicio_mensal, periodo_final, freq="M")
+    )
+
+    chaves_periodos = tuple(
+        [str(ano) for ano in anos_historicos]
+        + [periodo.strftime("%Y%m") for periodo in periodos_mensais]
+    )
+    marcadores = carregar_periodos_consultados(
+        ("ano", "mes"),
+        cnpjs,
+        chaves_periodos,
+    )
+    marcadores_cache = {
+        (str(linha.tipo), str(linha.identificador), str(linha.periodo)): linha.consultado_em
+        for linha in marcadores.itertuples(index=False)
+    }
+    agora = pd.Timestamp.now(tz="UTC")
+    cache_completo = True
+    for cnpj in cnpjs:
+        for ano in anos_historicos:
+            if ("ano", cnpj, str(ano)) not in marcadores_cache:
+                cache_completo = False
+                break
+        if not cache_completo:
+            break
+        for periodo in periodos_mensais:
+            chave = ("mes", cnpj, periodo.strftime("%Y%m"))
+            consultado_em = marcadores_cache.get(chave)
+            if consultado_em is None or pd.isna(consultado_em):
+                cache_completo = False
+                break
+            idade_meses = periodo_final.ordinal - periodo.ordinal
+            if idade_meses <= 1 and agora - consultado_em > pd.Timedelta(days=1):
+                cache_completo = False
+                break
+        if not cache_completo:
+            break
+
+    if cache_completo:
+        historico_cache = carregar_cotas(
+            cnpjs,
+            periodo_inicial.start_time.strftime("%Y-%m-%d"),
+            periodo_final.end_time.strftime("%Y-%m-%d"),
+        )
+        if historico_cache.empty:
+            raise RuntimeError("A CVM não retornou histórico para os fundos selecionados.")
+        return (
+            historico_cache.dropna(subset=["data", "cota"])
+            .drop_duplicates(["cnpj", "data"], keep="last")
+            .sort_values(["cnpj", "data"])
+        )
+
+    def carregar_parte(tipo: str, valor):
         try:
-            parte = carregar_informe_mes_cvm(periodo.strftime("%Y%m"), cnpjs)
+            if tipo == "ano":
+                return carregar_informe_ano_cvm(int(valor), cnpjs)
+            return carregar_informe_mes_cvm(str(valor), cnpjs)
         except requests.HTTPError as erro:
             if erro.response is not None and erro.response.status_code == 404:
-                continue
+                return pd.DataFrame()
             raise
-        if not parte.empty:
-            partes.append(parte)
+
+    tarefas = [
+        *(('ano', ano) for ano in anos_historicos),
+        *(('mes', periodo.strftime("%Y%m")) for periodo in periodos_mensais),
+    ]
+    partes = []
+    max_trabalhadores = min(4, len(tarefas))
+    if max_trabalhadores:
+        with ThreadPoolExecutor(max_workers=max_trabalhadores) as executor:
+            futuros = {
+                executor.submit(carregar_parte, tipo, valor): (tipo, valor)
+                for tipo, valor in tarefas
+            }
+            for futuro in as_completed(futuros):
+                parte = futuro.result()
+                if not parte.empty:
+                    partes.append(parte)
     if not partes:
         raise RuntimeError("A CVM não retornou histórico para os fundos selecionados.")
     historico = pd.concat(partes, ignore_index=True)

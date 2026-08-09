@@ -190,11 +190,11 @@ def inicializar(banco) -> None:
         )
         """
     ).close()
-    _executar(
-        banco,
-        "ALTER TABLE cadastro_fundos ADD COLUMN IF NOT EXISTS busca TEXT NOT NULL DEFAULT ''",
-    ).close()
     if backend_banco() == "postgresql":
+        _executar(
+            banco,
+            "ALTER TABLE cadastro_fundos ADD COLUMN IF NOT EXISTS busca TEXT NOT NULL DEFAULT ''",
+        ).close()
         _executar(
             banco,
             """
@@ -202,6 +202,17 @@ def inicializar(banco) -> None:
             ON cadastro_fundos USING gin (busca gin_trgm_ops)
             """,
         ).close()
+    else:
+        cursor_colunas = _executar(banco, "PRAGMA table_info(cadastro_fundos)")
+        try:
+            colunas_existentes = {linha[1] for linha in cursor_colunas.fetchall()}
+        finally:
+            cursor_colunas.close()
+        if "busca" not in colunas_existentes:
+            _executar(
+                banco,
+                "ALTER TABLE cadastro_fundos ADD COLUMN busca TEXT NOT NULL DEFAULT ''",
+            ).close()
     _executar(
         banco,
         """
@@ -664,6 +675,46 @@ def periodo_foi_consultado(
     consultado_em = datetime.fromisoformat(resultado[0])
     idade = datetime.now(timezone.utc) - consultado_em
     return idade.total_seconds() < validade_segundos
+
+
+def carregar_periodos_consultados(
+    tipos: tuple[str, ...],
+    identificadores: tuple[str, ...],
+    periodos: tuple[str, ...],
+) -> pd.DataFrame:
+    colunas = [
+        "tipo",
+        "identificador",
+        "periodo",
+        "possui_dados",
+        "consultado_em",
+    ]
+    if not tipos or not identificadores or not periodos:
+        return pd.DataFrame(columns=colunas)
+    marcadores_tipos = ",".join("?" for _ in tipos)
+    marcadores_identificadores = ",".join("?" for _ in identificadores)
+    marcadores_periodos = ",".join("?" for _ in periodos)
+    parametros = (*tipos, *identificadores, *periodos)
+    with conexao() as banco:
+        dados = _ler_dataframe(
+            banco,
+            f"""
+            SELECT tipo, identificador, periodo, possui_dados, consultado_em
+            FROM periodos_consultados
+            WHERE tipo IN ({marcadores_tipos})
+              AND identificador IN ({marcadores_identificadores})
+              AND periodo IN ({marcadores_periodos})
+            """,
+            parametros,
+            colunas,
+        )
+    if dados.empty:
+        return pd.DataFrame(columns=colunas)
+    dados["consultado_em"] = pd.to_datetime(
+        dados["consultado_em"], errors="coerce", utc=True
+    )
+    dados["possui_dados"] = dados["possui_dados"].astype(bool)
+    return dados
 
 
 def registrar_periodo(
