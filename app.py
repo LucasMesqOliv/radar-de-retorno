@@ -327,6 +327,12 @@ def aplicar_identidade_visual():
             box-shadow: 0 5px 18px rgba(24,44,76,.05);
         }
 
+        div[data-testid="stMetricLabel"] p {
+            white-space: normal;
+            line-height: 1.25;
+            min-height: 2.45em;
+        }
+
         .stButton > button, .stDownloadButton > button {
             border-radius: .58rem;
             border-color: var(--radar-blue);
@@ -1468,24 +1474,78 @@ def calcular_retorno_serie(
     }
 
 
-def criar_tabela_periodos_fundos(series: dict[str, pd.Series]) -> pd.DataFrame:
-    periodos = [
-        ("Mês", None, "mes"),
-        ("Ano", None, "ano"),
-        ("1 mês", 1, None),
-        ("3 meses", 3, None),
-        ("6 meses", 6, None),
-        ("12 meses", 12, None),
-        ("24 meses", 24, None),
-        ("36 meses", 36, None),
-        ("60 meses", 60, None),
-        ("Desde o início comum", None, "inicio"),
-    ]
+def abreviar_rotulo_serie(nome: str, limite: int = 46) -> str:
+    texto = re.sub(
+        r"\s+-\s+(RESPONSABILIDADE LIMITADA|RESP LIMITADA)\s*$",
+        "",
+        str(nome),
+        flags=re.IGNORECASE,
+    )
+    texto = re.sub(r"\s+", " ", texto).strip()
+    if len(texto) <= limite:
+        return texto
+    trecho = texto[: limite - 1].rsplit(" ", 1)[0]
+    return f"{trecho or texto[: limite - 1]}…"
+
+
+def opcoes_periodos_retorno_fundos(
+    rotulo_periodo_selecionado: str,
+    meses_periodo_selecionado: int | None,
+) -> dict[str, tuple[int | None, str | None]]:
+    periodo_equivalente = (
+        meses_periodo_selecionado,
+        "inicio" if meses_periodo_selecionado is None else None,
+    )
+    opcoes = {
+        "Mês atual": (None, "mes"),
+        "Ano atual": (None, "ano"),
+        "1 mês": (1, None),
+        "2 meses": (2, None),
+        "3 meses": (3, None),
+        "6 meses": (6, None),
+        "12 meses": (12, None),
+        "24 meses": (24, None),
+        "36 meses": (36, None),
+        "60 meses": (60, None),
+        "Desde o início comum": (None, "inicio"),
+    }
+    for rotulo, configuracao in list(opcoes.items()):
+        if configuracao == periodo_equivalente and rotulo not in {
+            "Mês atual",
+            "Ano atual",
+        }:
+            del opcoes[rotulo]
+    opcoes[f"Período selecionado - {rotulo_periodo_selecionado}"] = (
+        None,
+        "periodo_selecionado",
+    )
+    return opcoes
+
+
+def criar_tabela_periodos_fundos(
+    series: dict[str, pd.Series],
+    periodos: dict[str, tuple[int | None, str | None]] | None = None,
+    series_periodo_selecionado: dict[str, pd.Series] | None = None,
+) -> pd.DataFrame:
+    if periodos is None:
+        periodos = opcoes_periodos_retorno_fundos("12 meses", 12)
     linhas = []
     for nome, serie in series.items():
-        linha = {"Ativo": nome}
-        for rotulo, meses, calendario in periodos:
-            resultado = calcular_retorno_serie(serie, meses, calendario)
+        linha = {"Ativo": abreviar_rotulo_serie(nome, 52)}
+        for rotulo, (meses, calendario) in periodos.items():
+            serie_calculo = (
+                (series_periodo_selecionado or {}).get(nome, serie)
+                if calendario == "periodo_selecionado"
+                else serie
+            )
+            calendario_calculo = (
+                "inicio" if calendario == "periodo_selecionado" else calendario
+            )
+            resultado = calcular_retorno_serie(
+                serie_calculo,
+                meses,
+                calendario_calculo,
+            )
             linha[rotulo] = "—" if resultado is None else f"{resultado['retorno']:.2%}"
         linhas.append(linha)
     return pd.DataFrame(linhas)
@@ -1818,23 +1878,34 @@ def criar_grafico_evolucao_fundos(series: dict[str, pd.Series]):
     for (nome, serie), cor in zip(series.items(), cores):
         serie = serie.dropna().sort_index()
         retorno_acumulado = (serie / serie.iloc[0] - 1) * 100
+        rotulo = abreviar_rotulo_serie(nome)
         fig.add_trace(
             go.Scatter(
                 x=retorno_acumulado.index,
                 y=retorno_acumulado.values,
                 mode="lines",
-                name=nome,
+                name=rotulo,
                 line={"width": 2.4, "color": cor},
-                hovertemplate="%{x|%d/%m/%Y}<br>Retorno: %{y:.2f}%<extra></extra>",
+                hovertemplate=(
+                    f"<b>{nome}</b><br>%{{x|%d/%m/%Y}}<br>"
+                    "Retorno: %{y:.2f}%<extra></extra>"
+                ),
             )
         )
     fig.update_layout(
         title="Rentabilidade acumulada · início em 0%",
         height=500,
-        margin={"l": 25, "r": 20, "t": 65, "b": 85},
+        margin={"l": 25, "r": 20, "t": 65, "b": 115},
         hovermode="x unified",
         dragmode=False,
-        legend={"orientation": "h", "y": -0.18, "x": 0.5, "xanchor": "center"},
+        legend={
+            "orientation": "h",
+            "y": -0.22,
+            "x": 0,
+            "xanchor": "left",
+            "entrywidth": 240,
+            "entrywidthmode": "pixels",
+        },
         plot_bgcolor="white",
         paper_bgcolor="white",
     )
@@ -2506,6 +2577,7 @@ def montar_dados_pdf_fundos(
     nomes_fundos: list[str],
     series_rentabilidade: dict[str, pd.Series],
     series_periodos: dict[str, pd.Series],
+    periodos_retorno_exibidos: dict[str, tuple[int | None, str | None]],
     series_risco_exibidas: dict[str, pd.Series],
     series_risco_metricas: dict[str, pd.Series],
     dias_janela_risco: int,
@@ -2549,7 +2621,15 @@ def montar_dados_pdf_fundos(
             }
         )
 
-    retornos_periodos = criar_tabela_periodos_fundos(series_periodos)
+    retornos_periodos = (
+        criar_tabela_periodos_fundos(
+            series_periodos,
+            periodos_retorno_exibidos,
+            series_rentabilidade,
+        )
+        if periodos_retorno_exibidos
+        else pd.DataFrame()
+    )
     colunas_periodos = [
         coluna
         for coluna in retornos_periodos.columns
@@ -2758,7 +2838,46 @@ def renderizar_analise_completa_fundos(
             config={"displayModeBar": False, "displaylogo": False},
         )
         st.markdown("#### Retornos por período")
-        tabela_periodos = criar_tabela_periodos_fundos(series_periodos)
+        opcoes_periodos_retorno = opcoes_periodos_retorno_fundos(
+            rotulo_rentabilidade,
+            meses_rentabilidade,
+        )
+        rotulo_periodo_principal = next(
+            rotulo
+            for rotulo in opcoes_periodos_retorno
+            if rotulo.startswith("Período selecionado")
+        )
+        periodos_retorno_selecionados = st.multiselect(
+            "Períodos exibidos",
+            options=list(opcoes_periodos_retorno),
+            default=[
+                rotulo
+                for rotulo in [
+                    "Mês atual",
+                    "Ano atual",
+                    "3 meses",
+                    "6 meses",
+                    rotulo_periodo_principal,
+                ]
+                if rotulo in opcoes_periodos_retorno
+            ],
+            key=(
+                f"periodos_retorno_{'_'.join(cnpjs)}_"
+                f"{rotulo_rentabilidade}"
+            ),
+            help=(
+                "A tabela e o PDF usarão exatamente os horizontes escolhidos aqui."
+            ),
+        )
+        periodos_retorno_exibidos = {
+            rotulo: opcoes_periodos_retorno[rotulo]
+            for rotulo in periodos_retorno_selecionados
+        }
+        tabela_periodos = criar_tabela_periodos_fundos(
+            series_periodos,
+            periodos_retorno_exibidos,
+            series_rentabilidade,
+        )
         tabela_periodos = tabela_periodos[
             [
                 coluna
@@ -2767,11 +2886,20 @@ def renderizar_analise_completa_fundos(
                 or tabela_periodos[coluna].astype(str).ne("—").any()
             ]
         ]
-        st.dataframe(
-            tabela_periodos,
-            hide_index=True,
-            width="stretch",
-        )
+        if periodos_retorno_exibidos:
+            st.dataframe(
+                tabela_periodos,
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "Ativo": st.column_config.TextColumn(
+                        "Fundo / benchmark",
+                        width="large",
+                    )
+                },
+            )
+        else:
+            st.info("Selecione ao menos um período para exibir a tabela.")
         st.markdown("#### Retornos mensais")
         if len(cnpjs) == 1:
             matriz_mensal = criar_matriz_retornos_anuais(
@@ -3045,6 +3173,7 @@ def renderizar_analise_completa_fundos(
         nomes_fundos,
         series_rentabilidade,
         series_periodos,
+        periodos_retorno_exibidos,
         series_risco,
         series_risco_completas,
         dias_janela_risco,
@@ -4155,13 +4284,14 @@ def criar_grafico(
     exibir_acumulado = visualizacao == "Acumulado em linhas"
 
     for codigo in series_escolhidas:
+        rotulo_legenda = abreviar_rotulo_serie(nomes[codigo], 30)
         if exibir_acumulado:
             fig.add_trace(
                 go.Scatter(
                     x=analise["data_final"],
                     y=analise[f"{codigo}_acumulado"] * 100,
                     mode="lines",
-                    name=nomes[codigo],
+                    name=rotulo_legenda,
                     line={
                         "color": cores[codigo],
                         "width": 2.5,
@@ -4180,7 +4310,7 @@ def criar_grafico(
                     x=analise["data_final"],
                     y=analise[codigo] * 100,
                     mode="lines",
-                    name=nomes[codigo],
+                    name=rotulo_legenda,
                     line={
                         "color": cores[codigo],
                         "width": 2.5,
@@ -4208,7 +4338,7 @@ def criar_grafico(
         autosize=False,
         width=1100,
         height=520,
-        margin={"l": 25, "r": 20, "t": 75, "b": 80},
+        margin={"l": 25, "r": 20, "t": 75, "b": 110},
         hovermode="x unified",
         dragmode=False,
         legend={
@@ -4217,6 +4347,8 @@ def criar_grafico(
             "y": -0.16,
             "xanchor": "center",
             "x": 0.5,
+            "entrywidth": 190,
+            "entrywidthmode": "pixels",
         },
         plot_bgcolor="white",
         paper_bgcolor="white",
@@ -4298,12 +4430,13 @@ def criar_grafico_periodo(
     fig = go.Figure()
 
     for codigo in series_escolhidas:
+        rotulo_legenda = abreviar_rotulo_serie(nomes[codigo], 30)
         fig.add_trace(
             go.Scatter(
                 x=periodo["data"],
                 y=periodo[f"normalizado_{codigo}"],
                 mode="lines",
-                name=nomes[codigo],
+                name=rotulo_legenda,
                 line={
                     "color": cores[codigo],
                     "width": 2.5,
@@ -4326,7 +4459,7 @@ def criar_grafico_periodo(
         autosize=False,
         width=1100,
         height=480,
-        margin={"l": 25, "r": 20, "t": 75, "b": 80},
+        margin={"l": 25, "r": 20, "t": 75, "b": 110},
         hovermode="x unified",
         dragmode=False,
         legend={
@@ -4335,6 +4468,8 @@ def criar_grafico_periodo(
             "y": -0.16,
             "xanchor": "center",
             "x": 0.5,
+            "entrywidth": 190,
+            "entrywidthmode": "pixels",
         },
         plot_bgcolor="white",
         paper_bgcolor="white",
@@ -4479,14 +4614,17 @@ def montar_dados_apresentacao(
         frequencia = (analise[serie_principal] > analise[comparativa]).mean()
         comparacoes.append({
             "value": formatar_percentual(frequencia),
-            "label": f"{nomes[serie_principal]} venceu {nomes[comparativa]}",
+            "label": (
+                f"{abreviar_rotulo_serie(nomes[serie_principal], 24)} venceu "
+                f"{abreviar_rotulo_serie(nomes[comparativa], 24)}"
+            ),
         })
 
     estatisticas = []
     for codigo in series_escolhidas:
         serie = analise[codigo]
         estatisticas.append({
-            "name": nomes[codigo],
+            "name": abreviar_rotulo_serie(nomes[codigo], 42),
             "periodReturn": formatar_percentual(
                 resultados_periodo[codigo]["acumulado"]
             ),
@@ -4513,7 +4651,7 @@ def montar_dados_apresentacao(
             "categories": [data.strftime("%m/%Y") for data in amostra["data_final"]],
             "series": [
                 {
-                    "name": nomes[codigo],
+                    "name": abreviar_rotulo_serie(nomes[codigo], 30),
                     "values": [float(valor) for valor in amostra[codigo]],
                     "dashed": codigo in {"prefixado", "referencia"},
                 }
@@ -4527,7 +4665,7 @@ def montar_dados_apresentacao(
             ],
             "series": [
                 {
-                    "name": nomes[codigo],
+                    "name": abreviar_rotulo_serie(nomes[codigo], 30),
                     "values": [
                         float(valor)
                         for valor in amostra_periodo[f"normalizado_{codigo}"]
@@ -4682,9 +4820,15 @@ try:
     colunas = st.columns(len(series_comparativas_finais))
     for coluna, comparativa in zip(colunas, series_comparativas_finais):
         frequencia = (analise[serie_principal] > analise[comparativa]).mean()
+        principal_curto = abreviar_rotulo_serie(nomes[serie_principal], 24)
+        comparativa_curta = abreviar_rotulo_serie(nomes[comparativa], 24)
         coluna.metric(
-            f"{nomes[serie_principal]} venceu {nomes[comparativa]}",
+            f"{principal_curto} venceu {comparativa_curta}",
             f"{frequencia:.1%}",
+            help=(
+                f"{nomes[serie_principal]} venceu {nomes[comparativa]} "
+                "nesta proporção das janelas históricas."
+            ),
         )
 
     visualizacao_janelas = st.radio(

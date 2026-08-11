@@ -352,13 +352,14 @@ def render_funds():
             [first_width] + [other_width] * (len(return_columns) - 1),
             6.3,
         )
-        text(
-            "Desde o início usa o primeiro período comum disponível para os ativos selecionados.",
-            MARGIN,
-            55,
-            7.5,
-            color=MUTED,
-        )
+        if any("Desde o início" in str(column) for column in return_columns):
+            text(
+                "Desde o início usa o primeiro período comum disponível para os ativos selecionados.",
+                MARGIN,
+                55,
+                7.5,
+                color=MUTED,
+            )
         finish_page()
 
     page_header("Evolução da rentabilidade", data.get("subtitle", ""))
