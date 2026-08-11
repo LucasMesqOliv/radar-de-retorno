@@ -4500,6 +4500,7 @@ def montar_dados_apresentacao(
 
     return {
         "reportType": "indices",
+        "reportVersion": "indices-v3-sem-retornos-mensais",
         "generatedAt": f"{meses[hoje.month - 1].capitalize()} de {hoje.year}",
         "summaryTitle": f"{nomes[serie_principal]} em perspectiva histórica",
         "summarySubtitle": (
@@ -4868,6 +4869,10 @@ try:
         historico_anos,
     )
     dados_json = json.dumps(dados_apresentacao, ensure_ascii=False, sort_keys=True)
+
+    if st.session_state.get("pdf_configuracao") != dados_json:
+        st.session_state.pop("pdf_radar", None)
+        st.session_state.pop("pdf_configuracao", None)
 
     if st.button("Preparar PDF", type="primary"):
         with st.spinner("Montando o relatório em PDF..."):
