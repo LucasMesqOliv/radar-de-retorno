@@ -1398,6 +1398,8 @@ def calcular_retorno_serie(
         data_alvo = data_final.to_period("M").start_time - pd.Timedelta(days=1)
     elif inicio_calendario == "ano":
         data_alvo = pd.Timestamp(data_final.year, 1, 1) - pd.Timedelta(days=1)
+    elif inicio_calendario == "inicio":
+        data_alvo = pd.Timestamp(serie.index.min())
     else:
         data_alvo = data_final - pd.DateOffset(months=meses or 0)
     if data_alvo < serie.index.min():
@@ -1424,11 +1426,13 @@ def criar_tabela_periodos_fundos(series: dict[str, pd.Series]) -> pd.DataFrame:
         ("Mês", None, "mes"),
         ("Ano", None, "ano"),
         ("1 mês", 1, None),
+        ("3 meses", 3, None),
         ("6 meses", 6, None),
         ("12 meses", 12, None),
         ("24 meses", 24, None),
         ("36 meses", 36, None),
         ("60 meses", 60, None),
+        ("Desde o início comum", None, "inicio"),
     ]
     linhas = []
     for nome, serie in series.items():
@@ -2371,6 +2375,24 @@ def recortar_series_fundos(
     }
 
 
+def alinhar_series_periodo_comum(
+    series: dict[str, pd.Series],
+) -> dict[str, pd.Series]:
+    validas = {
+        nome: serie.dropna().sort_index()
+        for nome, serie in series.items()
+        if not serie.dropna().empty
+    }
+    if not validas:
+        return {}
+    inicio_comum = max(serie.index.min() for serie in validas.values())
+    fim_comum = min(serie.index.max() for serie in validas.values())
+    return {
+        nome: serie[(serie.index >= inicio_comum) & (serie.index <= fim_comum)]
+        for nome, serie in validas.items()
+    }
+
+
 @st.cache_data(show_spinner=False)
 def gerar_pdf_relatorio(dados_json: str) -> bytes:
     pasta_projeto = Path(__file__).resolve().parent
@@ -2436,7 +2458,12 @@ def montar_dados_pdf_fundos(
     cnpjs: list[str],
     nomes_fundos: list[str],
     series_rentabilidade: dict[str, pd.Series],
-    series_risco_completas: dict[str, pd.Series],
+    series_periodos: dict[str, pd.Series],
+    series_risco_exibidas: dict[str, pd.Series],
+    series_risco_metricas: dict[str, pd.Series],
+    dias_janela_risco: int,
+    janelas_moveis: dict[str, pd.Series],
+    rotulo_janela_movel: str,
     rotulo_rentabilidade: str,
     rotulo_risco: str,
 ) -> dict:
@@ -2458,10 +2485,11 @@ def montar_dados_pdf_fundos(
             {"name": nome, "values": [float(valor) for valor in normalizada]}
         )
 
-    metricas = calcular_metricas_risco_fundos(series_risco_completas)
+    metricas = calcular_metricas_risco_fundos(series_risco_metricas)
+    metricas = metricas[metricas["Ativo"].isin(series_risco_exibidas)]
     resumo = []
-    for nome in nomes_fundos:
-        serie = series_rentabilidade[nome]
+    for nome in series_risco_exibidas:
+        serie = series_rentabilidade.get(nome, series_risco_exibidas[nome])
         linha_risco = metricas[metricas["Ativo"].eq(nome)]
         risco = linha_risco.iloc[0] if not linha_risco.empty else pd.Series(dtype=float)
         resumo.append(
@@ -2474,13 +2502,55 @@ def montar_dados_pdf_fundos(
             }
         )
 
+    retornos_periodos = criar_tabela_periodos_fundos(series_periodos)
+    colunas_periodos = [
+        coluna
+        for coluna in retornos_periodos.columns
+        if coluna == "Ativo"
+        or retornos_periodos[coluna].astype(str).ne("—").any()
+    ]
+    retornos_periodos = retornos_periodos[colunas_periodos]
+
+    quadro_risco = pd.concat(series_risco_exibidas, axis=1, join="inner").dropna()
+    retornos_diarios_risco = quadro_risco.pct_change()
+    retorno_movel = quadro_risco.pct_change(periods=dias_janela_risco).dropna()
+    volatilidade_movel = (
+        retornos_diarios_risco.rolling(dias_janela_risco).std() * (252 ** 0.5)
+    ).dropna()
+    drawdown = quadro_risco.divide(quadro_risco.cummax()).sub(1)
+
+    def dados_grafico(quadro: pd.DataFrame) -> dict:
+        if quadro.empty:
+            return {"categories": [], "series": []}
+        passo_quadro = max(1, len(quadro) // 90)
+        amostra_quadro = quadro.iloc[::passo_quadro]
+        if amostra_quadro.index[-1] != quadro.index[-1]:
+            amostra_quadro = pd.concat([amostra_quadro, quadro.iloc[[-1]]])
+        return {
+            "categories": [data.strftime("%d/%m/%Y") for data in amostra_quadro.index],
+            "series": [
+                {
+                    "name": str(coluna),
+                    "values": [float(valor) for valor in amostra_quadro[coluna]],
+                }
+                for coluna in amostra_quadro.columns
+            ],
+        }
+
+    quadro_janelas = (
+        pd.concat(janelas_moveis, axis=1, join="inner").dropna()
+        if janelas_moveis
+        else pd.DataFrame()
+    )
+
     if len(nomes_fundos) == 1:
         mensal = criar_matriz_retornos_anuais(
             series_rentabilidade[nomes_fundos[0]]
         )
     else:
         mensal = criar_tabela_retornos_mensais(
-            {nome: series_rentabilidade[nome] for nome in nomes_fundos}, 12
+            series_rentabilidade,
+            None,
         )
 
     fundos = []
@@ -2504,7 +2574,22 @@ def montar_dados_pdf_fundos(
         "subtitle": f"Rentabilidade: {rotulo_rentabilidade} | Risco: {rotulo_risco}",
         "funds": fundos,
         "summary": resumo,
+        "returnsByPeriod": {
+            "columns": list(retornos_periodos.columns),
+            "rows": retornos_periodos.values.tolist(),
+        },
         "chart": {"categories": categorias, "series": grafico_series},
+        "risk": {
+            "windowDays": dias_janela_risco,
+            "label": rotulo_risco,
+            "rollingReturn": dados_grafico(retorno_movel),
+            "rollingVolatility": dados_grafico(volatilidade_movel),
+            "drawdown": dados_grafico(drawdown),
+        },
+        "movingWindows": {
+            "label": rotulo_janela_movel,
+            "chart": dados_grafico(quadro_janelas),
+        },
         "monthly": {
             "columns": list(mensal.columns),
             "rows": [
@@ -2524,23 +2609,13 @@ def renderizar_analise_completa_fundos(
     rotulo_rentabilidade, meses_rentabilidade = periodos_analise["rentabilidade"]
     rotulo_risco, meses_risco = periodos_analise["risco"]
     rotulo_janelas, meses_janelas = periodos_analise["janelas"]
-    periodos_solicitados = [
-        meses_rentabilidade,
-        meses_risco,
-        meses_janelas,
-    ]
-    meses_historico = (
-        None
-        if any(periodo is None for periodo in periodos_solicitados)
-        else max([12 if len(cnpjs) > 1 else 0, *periodos_solicitados])
-    )
+    meses_historico = None
     data_inicio_comum = None
-    if meses_historico is None:
-        datas_constituicao = cadastro.loc[
-            cadastro["cnpj"].isin(cnpjs), "data_constituicao"
-        ].dropna()
-        if not datas_constituicao.empty:
-            data_inicio_comum = datas_constituicao.max().strftime("%Y-%m-%d")
+    datas_constituicao = cadastro.loc[
+        cadastro["cnpj"].isin(cnpjs), "data_constituicao"
+    ].dropna()
+    if not datas_constituicao.empty:
+        data_inicio_comum = datas_constituicao.max().strftime("%Y-%m-%d")
     with st.spinner(
         "Montando o histórico. No primeiro acesso, a consulta de vários anos pode levar alguns minutos..."
     ):
@@ -2587,6 +2662,7 @@ def renderizar_analise_completa_fundos(
     series_rentabilidade = recortar_series_fundos(
         series_exibidas_completas, meses_rentabilidade
     )
+    series_periodos = alinhar_series_periodo_comum(series_exibidas_completas)
     series_risco_completas = recortar_series_fundos(series_completas, meses_risco)
     series_risco = {
         nome: serie
@@ -2635,8 +2711,17 @@ def renderizar_analise_completa_fundos(
             config={"displayModeBar": False, "displaylogo": False},
         )
         st.markdown("#### Retornos por período")
+        tabela_periodos = criar_tabela_periodos_fundos(series_periodos)
+        tabela_periodos = tabela_periodos[
+            [
+                coluna
+                for coluna in tabela_periodos.columns
+                if coluna == "Ativo"
+                or tabela_periodos[coluna].astype(str).ne("—").any()
+            ]
+        ]
         st.dataframe(
-            criar_tabela_periodos_fundos(series_rentabilidade),
+            tabela_periodos,
             hide_index=True,
             width="stretch",
         )
@@ -2912,7 +2997,12 @@ def renderizar_analise_completa_fundos(
         cnpjs,
         nomes_fundos,
         series_rentabilidade,
+        series_periodos,
+        series_risco,
         series_risco_completas,
+        dias_janela_risco,
+        janelas,
+        janela_escolhida,
         rotulo_rentabilidade,
         rotulo_risco,
     )
@@ -4361,11 +4451,14 @@ def montar_dados_apresentacao(
             "best": formatar_percentual(serie.max()),
         })
 
-    serie_mensal_principal = pd.Series(
-        periodo[f"normalizado_{serie_principal}"].values,
-        index=pd.DatetimeIndex(periodo["data"]),
-    )
-    matriz_mensal = criar_matriz_retornos_anuais(serie_mensal_principal)
+    series_mensais_indices = {
+        nomes[codigo]: pd.Series(
+            periodo[f"normalizado_{codigo}"].values,
+            index=pd.DatetimeIndex(periodo["data"]),
+        )
+        for codigo in series_escolhidas
+    }
+    tabela_mensal = criar_tabela_retornos_mensais(series_mensais_indices, 12)
 
     return {
         "reportType": "indices",
@@ -4407,10 +4500,10 @@ def montar_dados_apresentacao(
         },
         "statistics": estatisticas,
         "monthly": {
-            "columns": list(matriz_mensal.columns),
+            "columns": list(tabela_mensal.columns),
             "rows": [
                 [None if pd.isna(valor) else valor for valor in linha]
-                for linha in matriz_mensal.values.tolist()
+                for linha in tabela_mensal.values.tolist()
             ],
         },
         "parameters": {
@@ -4726,7 +4819,7 @@ try:
         "Todos os índices começam em 100 para facilitar a comparação."
     )
 
-    st.subheader("Rentabilidade histórica")
+    st.subheader("Retornos mensais - últimos 12 meses")
     series_indices_periodo = {
         nomes[codigo]: pd.Series(
             indices[COLUNAS_INDICES[codigo]].values,
@@ -4737,40 +4830,19 @@ try:
         ]
         for codigo in series_escolhidas
     }
-    aba_matriz_indices, aba_mensal_indices = st.tabs(
-        ["Matriz anual", "Últimos 12 meses"]
+    tabela_mensal_indices = criar_tabela_retornos_mensais(
+        series_indices_periodo, 12
     )
-    with aba_matriz_indices:
-        matriz_indices = criar_matriz_retornos_anuais(
-            series_indices_periodo[nomes[serie_principal]]
-        )
-        st.dataframe(
-            matriz_indices,
-            hide_index=True,
-            width="stretch",
-            column_config={
-                coluna: st.column_config.NumberColumn(format="percent")
-                for coluna in matriz_indices.columns
-                if coluna != "Ano"
-            },
-        )
-        st.caption(
-            f"Matriz mensal de {nomes[serie_principal]} no período escolhido."
-        )
-    with aba_mensal_indices:
-        tabela_mensal_indices = criar_tabela_retornos_mensais(
-            series_indices_periodo, 12
-        )
-        st.dataframe(
-            tabela_mensal_indices,
-            hide_index=True,
-            width="stretch",
-            column_config={
-                coluna: st.column_config.NumberColumn(format="percent")
-                for coluna in tabela_mensal_indices.columns
-                if coluna != "Fundo"
-            },
-        )
+    st.dataframe(
+        tabela_mensal_indices,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            coluna: st.column_config.NumberColumn(format="percent")
+            for coluna in tabela_mensal_indices.columns
+            if coluna != "Fundo"
+        },
+    )
 
     st.subheader("Relatório para o cliente")
     st.caption(

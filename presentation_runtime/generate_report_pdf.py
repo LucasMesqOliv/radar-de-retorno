@@ -336,31 +336,111 @@ def render_funds():
                [310, 105, 115, 90, 105], 7.2)
     finish_page()
 
+    returns = data.get("returnsByPeriod", {})
+    return_columns = returns.get("columns", [])
+    return_rows = returns.get("rows", [])
+    if return_columns:
+        page_header("Rentabilidade por período", data.get("subtitle", ""))
+        first_width = 205
+        remaining = W - 2 * MARGIN - first_width
+        other_width = remaining / max(1, len(return_columns) - 1)
+        draw_table(
+            [return_columns] + return_rows,
+            MARGIN,
+            H - 112,
+            W - 2 * MARGIN,
+            [first_width] + [other_width] * (len(return_columns) - 1),
+            6.3,
+        )
+        text(
+            "Desde o início usa o primeiro período comum disponível para os ativos selecionados.",
+            MARGIN,
+            55,
+            7.5,
+            color=MUTED,
+        )
+        finish_page()
+
     page_header("Evolução da rentabilidade", data.get("subtitle", ""))
     draw_line_chart(data.get("chart", {}), 72, 125, W - 115, H - 245, False)
     text("Índice base 100 no início do período selecionado.", MARGIN, 70, 8, color=MUTED)
     finish_page()
 
+    risk = data.get("risk", {})
+    rolling_return = risk.get("rollingReturn", {})
+    rolling_volatility = risk.get("rollingVolatility", {})
+    if rolling_return.get("series") or rolling_volatility.get("series"):
+        page_header(
+            "Análise de risco - janelas móveis",
+            f"{risk.get('label', '')} | Janela: {risk.get('windowDays', 21)} dias úteis",
+        )
+        text("Retorno efetivo móvel", MARGIN, H - 116, 10, True, NAVY)
+        draw_line_chart(rolling_return, 70, 330, W - 112, 115, True)
+        text("Volatilidade móvel anualizada", MARGIN, 265, 10, True, NAVY)
+        draw_line_chart(rolling_volatility, 70, 82, W - 112, 115, True)
+        finish_page()
+
+    drawdown_chart = risk.get("drawdown", {})
+    moving_windows = data.get("movingWindows", {})
+    moving_chart = moving_windows.get("chart", {})
+    if drawdown_chart.get("series") or moving_chart.get("series"):
+        page_header("Quedas e consistência histórica")
+        current_y = H - 116
+        if drawdown_chart.get("series"):
+            text("Drawdown", MARGIN, current_y, 10, True, NAVY)
+            draw_line_chart(drawdown_chart, 70, 315, W - 112, 120, True)
+            current_y = 250
+        if moving_chart.get("series"):
+            text(
+                f"Janelas móveis - {moving_windows.get('label', '')}",
+                MARGIN,
+                current_y,
+                10,
+                True,
+                NAVY,
+            )
+            draw_line_chart(moving_chart, 70, 72, W - 112, 120, True)
+        finish_page()
+
     monthly = data.get("monthly", {})
     columns_monthly = monthly.get("columns", [])
     rows_monthly = monthly.get("rows", [])
-    chunks = [rows_monthly[index:index + 12] for index in range(0, len(rows_monthly), 12)] or [[]]
-    for chunk_index, chunk in enumerate(chunks):
+    comparison = bool(columns_monthly and columns_monthly[0] == "Fundo")
+    if comparison:
+        chunks = []
+        for column_start in range(1, len(columns_monthly), 12):
+            chunk_columns = [columns_monthly[0]] + columns_monthly[
+                column_start:column_start + 12
+            ]
+            chunk_rows = [
+                [row[0]] + row[column_start:column_start + 12]
+                for row in rows_monthly
+            ]
+            chunks.append((chunk_columns, chunk_rows))
+        if not chunks:
+            chunks = [(columns_monthly, rows_monthly)]
+    else:
+        row_chunks = [
+            rows_monthly[index:index + 12]
+            for index in range(0, len(rows_monthly), 12)
+        ] or [[]]
+        chunks = [(columns_monthly, rows) for rows in row_chunks]
+    for chunk_index, (chunk_columns, chunk_rows) in enumerate(chunks):
         page_header(
             "Rentabilidade mensal" + (f" - continuação {chunk_index + 1}" if chunk_index else ""),
             "Anos nas linhas para análise individual; fundos nas linhas para comparação.",
         )
-        formatted = [columns_monthly]
-        for row in chunk:
+        formatted = [chunk_columns]
+        for row in chunk_rows:
             formatted_row = []
             for cell_index, value in enumerate(row):
                 formatted_row.append(str(value) if cell_index == 0 else pct(value))
             formatted.append(formatted_row)
-        first_width = 155 if columns_monthly and columns_monthly[0] == "Fundo" else 48
+        first_width = 155 if comparison else 48
         remaining = W - 2 * MARGIN - first_width
-        other_width = remaining / max(1, len(columns_monthly) - 1)
+        other_width = remaining / max(1, len(chunk_columns) - 1)
         draw_table(formatted, MARGIN, H - 115, W - 2 * MARGIN,
-                   [first_width] + [other_width] * (len(columns_monthly) - 1), 6.2)
+                   [first_width] + [other_width] * (len(chunk_columns) - 1), 6.2)
         finish_page()
     methodology_page("Fontes: Comissão de Valores Mobiliários (CVM) e benchmarks públicos selecionados.")
 
@@ -395,7 +475,7 @@ def render_indices():
         chunks = [rows_monthly[index:index + 12] for index in range(0, len(rows_monthly), 12)] or [[]]
         for chunk_index, chunk in enumerate(chunks):
             page_header(
-                "Rentabilidade mensal por ano"
+                "Retornos mensais - últimos 12 meses"
                 + (f" - continuação {chunk_index + 1}" if chunk_index else ""),
                 data.get("periodLabel", ""),
             )
@@ -404,7 +484,7 @@ def render_indices():
                 formatted.append(
                     [str(value) if index == 0 else pct(value) for index, value in enumerate(row)]
                 )
-            first_width = 48
+            first_width = 155 if columns_monthly[0] == "Fundo" else 48
             remaining = W - 2 * MARGIN - first_width
             other_width = remaining / max(1, len(columns_monthly) - 1)
             draw_table(
