@@ -96,6 +96,28 @@ def aplicar_identidade_visual():
             font-family: Inter, "Segoe UI", Arial, sans-serif;
         }
 
+        [data-testid="stMainBlockContainer"] {
+            max-width: 1500px;
+            padding-top: 1.15rem;
+            padding-bottom: 2rem;
+        }
+
+        [data-testid="stMain"] [data-testid="stVerticalBlock"] {
+            gap: .72rem;
+        }
+
+        [data-testid="stExpander"] {
+            border-color: #dbe4ef;
+            background: rgba(255,255,255,.72);
+        }
+
+        [data-testid="stExpander"] details > summary {
+            min-height: 2.65rem;
+            padding-top: .45rem;
+            padding-bottom: .45rem;
+            font-weight: 720;
+        }
+
         [data-testid="stHeader"] {
             background: rgba(244, 247, 251, .88);
             backdrop-filter: blur(10px);
@@ -229,8 +251,8 @@ def aplicar_identidade_visual():
         .radar-hero {
             position: relative;
             overflow: hidden;
-            padding: clamp(2rem, 5vw, 4.4rem);
-            margin-bottom: 1.25rem;
+            padding: clamp(1.55rem, 3.5vw, 3.2rem);
+            margin-bottom: .85rem;
             border-radius: 1.15rem;
             background:
                 linear-gradient(110deg, rgba(6,22,47,.98), rgba(18,75,155,.94)),
@@ -297,7 +319,7 @@ def aplicar_identidade_visual():
         }
 
         div[data-testid="stMetric"] {
-            padding: 1rem 1.05rem;
+            padding: .72rem .85rem;
             border: 1px solid #dce5f0;
             border-top: 3px solid var(--radar-blue);
             border-radius: .78rem;
@@ -1447,6 +1469,32 @@ def criar_tabela_retornos_mensais(
     return tabela.reset_index()
 
 
+def criar_matriz_retornos_anuais(serie: pd.Series) -> pd.DataFrame:
+    serie = serie.dropna().sort_index()
+    if len(serie) < 2:
+        return pd.DataFrame()
+    retornos = serie.pct_change().dropna()
+    mensais = (1 + retornos).resample("ME").prod() - 1
+    dados = pd.DataFrame(
+        {
+            "Ano": mensais.index.year,
+            "Mês": mensais.index.month,
+            "Retorno": mensais.values,
+        }
+    )
+    matriz = dados.pivot(index="Ano", columns="Mês", values="Retorno")
+    matriz = matriz.reindex(columns=range(1, 13))
+    matriz.columns = [
+        "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+        "Jul", "Ago", "Set", "Out", "Nov", "Dez",
+    ]
+    retorno_ano = mensais.groupby(mensais.index.year).apply(
+        lambda valores: (1 + valores).prod() - 1
+    )
+    matriz["No ano"] = retorno_ano
+    return matriz.sort_index(ascending=False).reset_index()
+
+
 def _retorno_entre_extremos(serie: pd.Series) -> float | None:
     serie = serie.dropna().sort_index()
     if len(serie) < 2 or serie.iloc[0] <= 0:
@@ -2323,6 +2371,150 @@ def recortar_series_fundos(
     }
 
 
+@st.cache_data(show_spinner=False)
+def gerar_pdf_relatorio(dados_json: str) -> bytes:
+    pasta_projeto = Path(__file__).resolve().parent
+    runtime = pasta_projeto / "presentation_runtime"
+    gerador = runtime / "generate_report_pdf.py"
+    python_bundled = (
+        Path.home()
+        / ".cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe"
+    )
+    python_pdf = Path(sys.executable)
+    if importlib.util.find_spec("reportlab") is None and python_bundled.exists():
+        python_pdf = python_bundled
+    if importlib.util.find_spec("reportlab") is None and not python_bundled.exists():
+        raise RuntimeError("A biblioteca de geração de PDF não está instalada.")
+
+    pasta_temporaria_pdf = pasta_projeto / ".radar_runtime" / "pdf"
+    pasta_temporaria_pdf.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        prefix="radar_retorno_",
+        suffix=".json",
+        dir=pasta_temporaria_pdf,
+        delete=False,
+        encoding="utf-8",
+    ) as arquivo_entrada:
+        arquivo_entrada.write(dados_json)
+        entrada = Path(arquivo_entrada.name)
+    saida = entrada.with_suffix(".pdf")
+
+    try:
+        if importlib.util.find_spec("reportlab") is not None:
+            argumentos_originais = sys.argv[:]
+            try:
+                sys.argv = [str(gerador), str(entrada), str(saida)]
+                runpy.run_path(str(gerador), run_name="__main__")
+            finally:
+                sys.argv = argumentos_originais
+            if not saida.exists():
+                raise RuntimeError("Não foi possível gerar o PDF.")
+            return saida.read_bytes()
+
+        processo = subprocess.run(
+            [str(python_pdf), str(gerador), str(entrada), str(saida)],
+            cwd=runtime,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if processo.returncode != 0 or not saida.exists():
+            detalhe = processo.stderr.strip().splitlines()[-1] if processo.stderr else ""
+            raise RuntimeError(f"Não foi possível gerar o PDF. {detalhe}")
+        return saida.read_bytes()
+    finally:
+        for arquivo_temporario in (entrada, saida):
+            try:
+                arquivo_temporario.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def montar_dados_pdf_fundos(
+    cadastro: pd.DataFrame,
+    cnpjs: list[str],
+    nomes_fundos: list[str],
+    series_rentabilidade: dict[str, pd.Series],
+    series_risco_completas: dict[str, pd.Series],
+    rotulo_rentabilidade: str,
+    rotulo_risco: str,
+) -> dict:
+    def numero_json(valor):
+        return None if pd.isna(valor) else float(valor)
+
+    passo = max(1, max(len(serie) for serie in series_rentabilidade.values()) // 90)
+    grafico_series = []
+    categorias = []
+    for nome, serie in series_rentabilidade.items():
+        serie = serie.dropna().sort_index()
+        amostra = serie.iloc[::passo]
+        if not amostra.empty and amostra.index[-1] != serie.index[-1]:
+            amostra = pd.concat([amostra, serie.iloc[[-1]]])
+        normalizada = amostra / float(serie.iloc[0]) * 100
+        if not categorias:
+            categorias = [data.strftime("%d/%m/%Y") for data in amostra.index]
+        grafico_series.append(
+            {"name": nome, "values": [float(valor) for valor in normalizada]}
+        )
+
+    metricas = calcular_metricas_risco_fundos(series_risco_completas)
+    resumo = []
+    for nome in nomes_fundos:
+        serie = series_rentabilidade[nome]
+        linha_risco = metricas[metricas["Ativo"].eq(nome)]
+        risco = linha_risco.iloc[0] if not linha_risco.empty else pd.Series(dtype=float)
+        resumo.append(
+            {
+                "name": nome,
+                "periodReturn": numero_json(_retorno_entre_extremos(serie)),
+                "volatility": numero_json(risco.get("Volatilidade a.a.")),
+                "sharpe": numero_json(risco.get("Sharpe vs. CDI")),
+                "drawdown": numero_json(risco.get("Maior queda")),
+            }
+        )
+
+    if len(nomes_fundos) == 1:
+        mensal = criar_matriz_retornos_anuais(
+            series_rentabilidade[nomes_fundos[0]]
+        )
+    else:
+        mensal = criar_tabela_retornos_mensais(
+            {nome: series_rentabilidade[nome] for nome in nomes_fundos}, 12
+        )
+
+    fundos = []
+    for cnpj, nome in zip(cnpjs, nomes_fundos):
+        linha = cadastro[cadastro["cnpj"].eq(cnpj)]
+        fundo = linha.iloc[0] if not linha.empty else pd.Series(dtype=object)
+        fundos.append(
+            {
+                "name": nome,
+                "cnpj": formatar_cnpj(cnpj),
+                "manager": texto_extrato(fundo.get("gestor")),
+                "administrator": texto_extrato(fundo.get("administrador")),
+                "classification": texto_extrato(fundo.get("classificacao")),
+            }
+        )
+
+    return {
+        "reportType": "fundos",
+        "generatedAt": date.today().strftime("%d/%m/%Y"),
+        "title": "Análise de fundo" if len(nomes_fundos) == 1 else "Comparação de fundos",
+        "subtitle": f"Rentabilidade: {rotulo_rentabilidade} | Risco: {rotulo_risco}",
+        "funds": fundos,
+        "summary": resumo,
+        "chart": {"categories": categorias, "series": grafico_series},
+        "monthly": {
+            "columns": list(mensal.columns),
+            "rows": [
+                [None if pd.isna(valor) else valor for valor in linha]
+                for linha in mensal.values.tolist()
+            ],
+        },
+    }
+
+
 def renderizar_analise_completa_fundos(
     cadastro,
     cnpjs,
@@ -2449,24 +2641,42 @@ def renderizar_analise_completa_fundos(
             width="stretch",
         )
         st.markdown("#### Retornos mensais")
-        limite_meses_mensais = None if len(cnpjs) == 1 else 12
-        retornos_mensais = criar_tabela_retornos_mensais(
-            series_rentabilidade, limite_meses_mensais
-        )
-        st.dataframe(
-            retornos_mensais,
-            hide_index=True,
-            width="stretch",
-            column_config={
-                coluna: st.column_config.NumberColumn(format="percent")
-                for coluna in retornos_mensais.columns
-                if coluna != "Fundo"
-            },
-        )
-        st.caption(
-            "Na análise individual, a tabela percorre o período de rentabilidade "
-            "selecionado. Na comparação, são exibidos os últimos 12 meses disponíveis."
-        )
+        if len(cnpjs) == 1:
+            matriz_mensal = criar_matriz_retornos_anuais(
+                series_rentabilidade[nomes_fundos[0]]
+            )
+            st.dataframe(
+                matriz_mensal,
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    coluna: st.column_config.NumberColumn(format="percent")
+                    for coluna in matriz_mensal.columns
+                    if coluna != "Ano"
+                },
+            )
+            st.caption(
+                "Os anos descem pelas linhas e os meses permanecem fixos nas colunas. "
+                "Células vazias indicam meses fora do período selecionado."
+            )
+        else:
+            retornos_mensais = criar_tabela_retornos_mensais(
+                series_rentabilidade, 12
+            )
+            st.dataframe(
+                retornos_mensais,
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    coluna: st.column_config.NumberColumn(format="percent")
+                    for coluna in retornos_mensais.columns
+                    if coluna != "Fundo"
+                },
+            )
+            st.caption(
+                "Na comparação, cada fundo ocupa uma linha e os 12 meses mais recentes "
+                "permanecem lado a lado."
+            )
         data_inicial_rentabilidade = max(
             serie.index.min() for serie in series_rentabilidade.values()
         )
@@ -2693,6 +2903,46 @@ def renderizar_analise_completa_fundos(
                         "calculados com poucas observações devem ser interpretados com cautela."
                     )
 
+    st.markdown("### Relatório para o cliente")
+    st.caption(
+        "Baixe a análise de rentabilidade e risco em um PDF organizado para apresentação."
+    )
+    dados_pdf_fundos = montar_dados_pdf_fundos(
+        cadastro,
+        cnpjs,
+        nomes_fundos,
+        series_rentabilidade,
+        series_risco_completas,
+        rotulo_rentabilidade,
+        rotulo_risco,
+    )
+    dados_json_fundos = json.dumps(
+        dados_pdf_fundos, ensure_ascii=False, sort_keys=True, allow_nan=False
+    )
+    chave_pdf_fundos = f"pdf_fundos_{'_'.join(cnpjs)}"
+    if st.button(
+        "Preparar PDF da análise",
+        type="primary",
+        key=f"preparar_{chave_pdf_fundos}",
+    ):
+        with st.spinner("Montando o relatório de fundos..."):
+            st.session_state[chave_pdf_fundos] = gerar_pdf_relatorio(
+                dados_json_fundos
+            )
+            st.session_state[f"{chave_pdf_fundos}_config"] = dados_json_fundos
+    if (
+        st.session_state.get(chave_pdf_fundos)
+        and st.session_state.get(f"{chave_pdf_fundos}_config") == dados_json_fundos
+    ):
+        st.download_button(
+            "Baixar análise de fundos (.pdf)",
+            data=st.session_state[chave_pdf_fundos],
+            file_name="radar-de-retorno-fundos.pdf",
+            mime="application/pdf",
+            on_click="ignore",
+            key=f"baixar_{chave_pdf_fundos}",
+        )
+
 
 def selecionar_periodos_analise_fundos(opcoes_periodo, prefixo):
     st.markdown("##### Períodos de cada análise")
@@ -2820,7 +3070,7 @@ def pagina_fundos():
             "Quantidade de fundos", options=[1, 2, 3, 4], value=2, key="quantidade_fundos"
         )
         selecionados = []
-        colunas = st.columns(2)
+        colunas = st.columns(quantidade if quantidade > 2 else 2)
         for indice in range(quantidade):
             with colunas[indice % 2]:
                 selecionados.append(
@@ -3380,6 +3630,95 @@ def pagina_renda_fixa():
             "Em títulos privados, a taxa informada deve representar a taxa total exigida "
             "pelo mercado. A simulação não estima inadimplência, spread de crédito, "
             "liquidez, resgate antecipado ou cláusulas específicas."
+        )
+
+    st.markdown("### Relatório para o cliente")
+    st.caption(
+        "Baixe as premissas, os resultados, a sensibilidade e os fluxos da simulação."
+    )
+    dados_pdf_renda_fixa = {
+        "reportType": "renda_fixa",
+        "generatedAt": date.today().strftime("%d/%m/%Y"),
+        "title": "Simulação de renda fixa",
+        "subtitle": f"{emissor} | {indexador}",
+        "parameters": [
+            ["Data da compra", pd.Timestamp(data_compra).strftime("%d/%m/%Y")],
+            ["Data da saída", pd.Timestamp(data_saida).strftime("%d/%m/%Y")],
+            ["Vencimento", pd.Timestamp(data_vencimento).strftime("%d/%m/%Y")],
+            ["Valor investido", formatar_reais(valor_investido)],
+            ["Taxa de compra", f"{taxa_compra_pct:.2f}% a.a."],
+            ["Taxa na saída", f"{taxa_saida_pct:.2f}% a.a."],
+            ["Cupom", f"{taxa_cupom_pct:.2f}% a.a."],
+            ["IPCA projetado", f"{ipca_pct:.2f}% a.a."],
+        ],
+        "summary": [
+            ["Preço teórico na compra", formatar_reais(preco_compra_unitario)],
+            ["Valor estimado na saída", formatar_reais(valor_saida)],
+            ["Retorno total", f"{retorno_total:.2%}"],
+            ["Retorno anualizado", f"{retorno_anualizado:.2%}"],
+            ["Duration modificada", f"{duration_modificada:.2f} anos"],
+            ["DV01 da posição", formatar_reais(dv01_total)],
+            ["Retorno de carrego", f"{retorno_carrego:.2%}"],
+            ["Efeito da taxa", formatar_reais(efeito_taxa)],
+        ],
+        "sensitivity": {
+            "series": [
+                {
+                    "name": str(trace.name),
+                    "x": [float(valor) for valor in trace.x],
+                    "y": [float(valor) for valor in trace.y],
+                }
+                for trace in fig_assimetria.data
+            ]
+        },
+        "scenarios": {
+            "columns": ["Cenário", "Taxa na saída", "Impacto da taxa", "Retorno total", "Valor estimado"],
+            "rows": [
+                [
+                    str(linha["Cenário"]),
+                    f"{linha['Taxa na saída']:.2%}",
+                    f"{linha['Impacto da taxa']:.2%}",
+                    f"{linha['Retorno total']:.2%}",
+                    formatar_reais(linha["Valor estimado"]),
+                ]
+                for _, linha in tabela_resumo.iterrows()
+            ],
+        },
+        "cashflows": {
+            "columns": ["Data", "Cupom estimado", "Principal estimado"],
+            "rows": [
+                [
+                    pd.Timestamp(linha["Data"]).strftime("%d/%m/%Y"),
+                    formatar_reais(linha["Cupom estimado"]),
+                    formatar_reais(linha["Principal estimado"]),
+                ]
+                for linha in tabela_fluxos
+            ],
+        },
+    }
+    dados_json_renda_fixa = json.dumps(
+        dados_pdf_renda_fixa, ensure_ascii=False, sort_keys=True, allow_nan=False
+    )
+    if st.button(
+        "Preparar PDF da simulação",
+        type="primary",
+        key="preparar_pdf_renda_fixa",
+    ):
+        with st.spinner("Montando o relatório de renda fixa..."):
+            st.session_state["pdf_renda_fixa"] = gerar_pdf_relatorio(
+                dados_json_renda_fixa
+            )
+            st.session_state["pdf_renda_fixa_config"] = dados_json_renda_fixa
+    if (
+        st.session_state.get("pdf_renda_fixa")
+        and st.session_state.get("pdf_renda_fixa_config") == dados_json_renda_fixa
+    ):
+        st.download_button(
+            "Baixar simulação de renda fixa (.pdf)",
+            data=st.session_state["pdf_renda_fixa"],
+            file_name="radar-de-retorno-renda-fixa.pdf",
+            mime="application/pdf",
+            on_click="ignore",
         )
     rodape_radar()
 
@@ -4022,7 +4361,14 @@ def montar_dados_apresentacao(
             "best": formatar_percentual(serie.max()),
         })
 
+    serie_mensal_principal = pd.Series(
+        periodo[f"normalizado_{serie_principal}"].values,
+        index=pd.DatetimeIndex(periodo["data"]),
+    )
+    matriz_mensal = criar_matriz_retornos_anuais(serie_mensal_principal)
+
     return {
+        "reportType": "indices",
         "generatedAt": f"{meses[hoje.month - 1].capitalize()} de {hoje.year}",
         "summaryTitle": f"{nomes[serie_principal]} em perspectiva histórica",
         "summarySubtitle": (
@@ -4060,6 +4406,13 @@ def montar_dados_apresentacao(
             ],
         },
         "statistics": estatisticas,
+        "monthly": {
+            "columns": list(matriz_mensal.columns),
+            "rows": [
+                [None if pd.isna(valor) else valor for valor in linha]
+                for linha in matriz_mensal.values.tolist()
+            ],
+        },
         "parameters": {
             "windowYears": prazo_anos,
             "historyYears": historico_anos,
@@ -4069,68 +4422,7 @@ def montar_dados_apresentacao(
 
 @st.cache_data(show_spinner=False)
 def gerar_pdf(dados_json: str) -> bytes:
-    pasta_projeto = Path(__file__).resolve().parent
-    runtime = pasta_projeto / "presentation_runtime"
-    gerador = runtime / "generate_pdf.py"
-    python_bundled = (
-        Path.home()
-        / ".cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe"
-    )
-    python_pdf = Path(sys.executable)
-    if importlib.util.find_spec("reportlab") is None and python_bundled.exists():
-        python_pdf = python_bundled
-    if importlib.util.find_spec("reportlab") is None and not python_bundled.exists():
-        raise RuntimeError("A biblioteca de geração de PDF não está instalada.")
-
-    pasta_temporaria_pdf = Path(__file__).resolve().parent / ".radar_runtime" / "pdf"
-    pasta_temporaria_pdf.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        prefix="radar_retorno_",
-        suffix=".json",
-        dir=pasta_temporaria_pdf,
-        delete=False,
-        encoding="utf-8",
-    ) as arquivo_entrada:
-        arquivo_entrada.write(dados_json)
-        entrada = Path(arquivo_entrada.name)
-    saida = entrada.with_suffix(".pdf")
-
-    try:
-        # No Streamlit Cloud, o ReportLab já está instalado e o gerador pode
-        # rodar no mesmo processo, evitando a abertura de outro Python.
-        if importlib.util.find_spec("reportlab") is not None:
-            argumentos_originais = sys.argv[:]
-            try:
-                sys.argv = [str(gerador), str(entrada), str(saida)]
-                runpy.run_path(str(gerador), run_name="__main__")
-            finally:
-                sys.argv = argumentos_originais
-            if not saida.exists():
-                raise RuntimeError("Não foi possível gerar o PDF.")
-            return saida.read_bytes()
-
-        # No Anaconda local, enquanto o ReportLab não estiver instalado,
-        # preservamos o runtime auxiliar que já funcionava no projeto.
-        processo = subprocess.run(
-            [str(python_pdf), str(gerador), str(entrada), str(saida)],
-            cwd=runtime,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if processo.returncode != 0 or not saida.exists():
-            detalhe = processo.stderr.strip().splitlines()[-1] if processo.stderr else ""
-            raise RuntimeError(f"Não foi possível gerar o PDF. {detalhe}")
-        return saida.read_bytes()
-    finally:
-        for arquivo_temporario in (entrada, saida):
-            try:
-                arquivo_temporario.unlink(missing_ok=True)
-            except OSError:
-                # O Windows pode manter o arquivo bloqueado por alguns
-                # instantes; isso não deve impedir o download já concluído.
-                pass
+    return gerar_pdf_relatorio(dados_json)
 
 
 cabecalho_contextual("Análise de índices")
@@ -4433,6 +4725,52 @@ try:
         f"{periodo['data'].max():%m/%Y} ({meses_efetivos} meses). "
         "Todos os índices começam em 100 para facilitar a comparação."
     )
+
+    st.subheader("Rentabilidade histórica")
+    series_indices_periodo = {
+        nomes[codigo]: pd.Series(
+            indices[COLUNAS_INDICES[codigo]].values,
+            index=pd.DatetimeIndex(indices["data"]),
+        ).loc[
+            (pd.DatetimeIndex(indices["data"]) >= pd.Timestamp(data_inicial_periodo))
+            & (pd.DatetimeIndex(indices["data"]) <= pd.Timestamp(data_final_periodo))
+        ]
+        for codigo in series_escolhidas
+    }
+    aba_matriz_indices, aba_mensal_indices = st.tabs(
+        ["Matriz anual", "Últimos 12 meses"]
+    )
+    with aba_matriz_indices:
+        matriz_indices = criar_matriz_retornos_anuais(
+            series_indices_periodo[nomes[serie_principal]]
+        )
+        st.dataframe(
+            matriz_indices,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                coluna: st.column_config.NumberColumn(format="percent")
+                for coluna in matriz_indices.columns
+                if coluna != "Ano"
+            },
+        )
+        st.caption(
+            f"Matriz mensal de {nomes[serie_principal]} no período escolhido."
+        )
+    with aba_mensal_indices:
+        tabela_mensal_indices = criar_tabela_retornos_mensais(
+            series_indices_periodo, 12
+        )
+        st.dataframe(
+            tabela_mensal_indices,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                coluna: st.column_config.NumberColumn(format="percent")
+                for coluna in tabela_mensal_indices.columns
+                if coluna != "Fundo"
+            },
+        )
 
     st.subheader("Relatório para o cliente")
     st.caption(
