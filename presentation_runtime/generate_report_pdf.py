@@ -468,34 +468,6 @@ def render_indices():
     draw_line_chart(data.get("periodChart", {}), 72, 125, W - 115, H - 245, False)
     finish_page()
 
-    monthly = data.get("monthly", {})
-    columns_monthly = monthly.get("columns", [])
-    rows_monthly = monthly.get("rows", [])
-    if columns_monthly:
-        chunks = [rows_monthly[index:index + 12] for index in range(0, len(rows_monthly), 12)] or [[]]
-        for chunk_index, chunk in enumerate(chunks):
-            page_header(
-                "Retornos mensais - últimos 12 meses"
-                + (f" - continuação {chunk_index + 1}" if chunk_index else ""),
-                data.get("periodLabel", ""),
-            )
-            formatted = [columns_monthly]
-            for row in chunk:
-                formatted.append(
-                    [str(value) if index == 0 else pct(value) for index, value in enumerate(row)]
-                )
-            first_width = 155 if columns_monthly[0] == "Fundo" else 48
-            remaining = W - 2 * MARGIN - first_width
-            other_width = remaining / max(1, len(columns_monthly) - 1)
-            draw_table(
-                formatted,
-                MARGIN,
-                H - 115,
-                W - 2 * MARGIN,
-                [first_width] + [other_width] * (len(columns_monthly) - 1),
-                6.2,
-            )
-            finish_page()
     methodology_page("Fontes: Banco Central do Brasil e Yahoo Finance (^GSPC).")
 
 

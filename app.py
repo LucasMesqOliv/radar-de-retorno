@@ -1238,29 +1238,70 @@ def carregar_historico_fundos_cvm(
 
 @st.cache_data(ttl=86_400, show_spinner=False)
 def carregar_cdi_para_fundos(ano_inicial: int) -> pd.Series:
+    codigo_banco = "BCB_12"
+    armazenados = carregar_serie_mercado(codigo_banco)
+    if (
+        not armazenados.empty
+        and serie_mercado_atualizada_recentemente(codigo_banco)
+        and armazenados["data"].min().year <= ano_inicial
+    ):
+        dados = armazenados.sort_values("data")
+        taxas = pd.to_numeric(dados["valor"], errors="coerce") / 100
+        indice = (1 + taxas).cumprod()
+        return pd.Series(indice.values, index=dados["data"], name="CDI")
+
     partes = []
     url = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados"
-    for ano in range(ano_inicial, date.today().year + 1):
-        resposta = requests.get(
-            url,
-            params={
-                "formato": "json",
-                "dataInicial": f"01/01/{ano}",
-                "dataFinal": f"31/12/{ano}",
-            },
-            headers={"User-Agent": "Radar-de-Retorno/1.0"},
-            timeout=30,
-        )
-        resposta.raise_for_status()
+    primeiro_ano = (
+        ano_inicial
+        if armazenados.empty
+        else max(ano_inicial, armazenados["data"].max().year)
+    )
+    ultimo_erro = None
+    for ano in range(primeiro_ano, date.today().year + 1):
+        resposta = None
+        for tentativa in range(4):
+            try:
+                resposta = requests.get(
+                    url,
+                    params={
+                        "formato": "json",
+                        "dataInicial": f"01/01/{ano}",
+                        "dataFinal": f"31/12/{ano}",
+                    },
+                    headers={"User-Agent": "Radar-de-Retorno/1.0"},
+                    timeout=30,
+                )
+                resposta.raise_for_status()
+                ultimo_erro = None
+                break
+            except requests.RequestException as erro:
+                ultimo_erro = erro
+                if tentativa < 3:
+                    time.sleep(2 ** tentativa)
+        if resposta is None or ultimo_erro is not None:
+            continue
         parte = pd.DataFrame(resposta.json())
         if not parte.empty:
             partes.append(parte)
-    if not partes:
+    if partes:
+        novos = pd.concat(partes, ignore_index=True)
+        novos["data"] = pd.to_datetime(novos["data"], dayfirst=True)
+        novos["valor"] = pd.to_numeric(
+            novos["valor"].astype(str).str.replace(",", "."),
+            errors="coerce",
+        )
+        novos = novos.dropna(subset=["data", "valor"])
+        salvar_serie_mercado(codigo_banco, novos)
+
+    dados = carregar_serie_mercado(codigo_banco)
+    if dados.empty:
         raise RuntimeError("O Banco Central não retornou a série do CDI.")
-    dados = pd.concat(partes, ignore_index=True)
-    dados["data"] = pd.to_datetime(dados["data"], dayfirst=True)
+    dados = dados[
+        dados["data"] >= pd.Timestamp(ano_inicial, 1, 1)
+    ].sort_values("data").copy()
     dados["taxa"] = pd.to_numeric(
-        dados["valor"].astype(str).str.replace(",", "."),
+        dados["valor"],
         errors="coerce",
     ) / 100
     dados = dados.dropna(subset=["data", "taxa"]).sort_values("data")
@@ -1361,7 +1402,13 @@ def obter_series_analise_fundos(
 
     primeira_data = min(serie.index.min() for serie in series.values())
     if "CDI" in benchmarks:
-        series["CDI"] = carregar_cdi_para_fundos(primeira_data.year)
+        try:
+            series["CDI"] = carregar_cdi_para_fundos(primeira_data.year)
+        except (requests.RequestException, RuntimeError):
+            st.warning(
+                "O CDI está temporariamente indisponível no Banco Central. "
+                "A análise dos fundos continuará sem esse benchmark."
+            )
     if "Ibovespa" in benchmarks:
         series["Ibovespa"] = carregar_indice_b3("IBOV", primeira_data.year)
     if "IDIV" in benchmarks:
@@ -4451,15 +4498,6 @@ def montar_dados_apresentacao(
             "best": formatar_percentual(serie.max()),
         })
 
-    series_mensais_indices = {
-        nomes[codigo]: pd.Series(
-            periodo[f"normalizado_{codigo}"].values,
-            index=pd.DatetimeIndex(periodo["data"]),
-        )
-        for codigo in series_escolhidas
-    }
-    tabela_mensal = criar_tabela_retornos_mensais(series_mensais_indices, 12)
-
     return {
         "reportType": "indices",
         "generatedAt": f"{meses[hoje.month - 1].capitalize()} de {hoje.year}",
@@ -4499,13 +4537,6 @@ def montar_dados_apresentacao(
             ],
         },
         "statistics": estatisticas,
-        "monthly": {
-            "columns": list(tabela_mensal.columns),
-            "rows": [
-                [None if pd.isna(valor) else valor for valor in linha]
-                for linha in tabela_mensal.values.tolist()
-            ],
-        },
         "parameters": {
             "windowYears": prazo_anos,
             "historyYears": historico_anos,
@@ -4817,31 +4848,6 @@ try:
         f"Período efetivamente utilizado: {periodo['data'].min():%m/%Y} a "
         f"{periodo['data'].max():%m/%Y} ({meses_efetivos} meses). "
         "Todos os índices começam em 100 para facilitar a comparação."
-    )
-
-    st.subheader("Retornos mensais - últimos 12 meses")
-    series_indices_periodo = {
-        nomes[codigo]: pd.Series(
-            indices[COLUNAS_INDICES[codigo]].values,
-            index=pd.DatetimeIndex(indices["data"]),
-        ).loc[
-            (pd.DatetimeIndex(indices["data"]) >= pd.Timestamp(data_inicial_periodo))
-            & (pd.DatetimeIndex(indices["data"]) <= pd.Timestamp(data_final_periodo))
-        ]
-        for codigo in series_escolhidas
-    }
-    tabela_mensal_indices = criar_tabela_retornos_mensais(
-        series_indices_periodo, 12
-    )
-    st.dataframe(
-        tabela_mensal_indices,
-        hide_index=True,
-        width="stretch",
-        column_config={
-            coluna: st.column_config.NumberColumn(format="percent")
-            for coluna in tabela_mensal_indices.columns
-            if coluna != "Fundo"
-        },
     )
 
     st.subheader("Relatório para o cliente")
