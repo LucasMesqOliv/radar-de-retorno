@@ -4201,6 +4201,11 @@ def preparar_dados(ano_inicial: int = 2000):
     ipca = baixar_serie_bcb(433, ano_inicial)
     ipca["ipca_mes"] = ipca["valor"] / 100
     ipca["mes"] = ipca["data"].dt.to_period("M")
+    ipca = (
+        ipca.sort_values("data")
+        .groupby("mes", as_index=False)
+        .last()
+    )
 
     sp500 = baixar_sp500(ano_inicial)
     usd_brl = baixar_usd_brl(ano_inicial)
@@ -4282,7 +4287,14 @@ def construir_indices(
         usd_brl[["mes", "usd_brl"]],
         on="mes",
         how="inner",
-    ).sort_values("mes")
+    )
+    # Cada ponto do gráfico e cada passo da janela devem representar um único
+    # mês. Caches com revisões na mesma competência não podem duplicar linhas.
+    base = (
+        base.sort_values("mes")
+        .drop_duplicates("mes", keep="last")
+        .reset_index(drop=True)
+    )
 
     base["indice_prefixado"] = (
         (1 + taxa_prefixada_mensal) ** pd.Series(range(len(base)), index=base.index)
