@@ -4286,7 +4286,7 @@ def construir_indices(
         base,
         usd_brl[["mes", "usd_brl"]],
         on="mes",
-        how="inner",
+        how="left",
     )
     # Cada ponto do gráfico e cada passo da janela devem representar um único
     # mês. Caches com revisões na mesma competência não podem duplicar linhas.
@@ -4295,6 +4295,13 @@ def construir_indices(
         .drop_duplicates("mes", keep="last")
         .reset_index(drop=True)
     )
+    # O calendário das demais referências não pode depender de eventuais
+    # lacunas do Yahoo no USD/BRL. Para o S&P em reais, usa-se a última cotação
+    # disponível (ou a primeira, antes do início da série cambial).
+    base["usd_brl"] = pd.to_numeric(base["usd_brl"], errors="coerce")
+    base["usd_brl"] = base["usd_brl"].ffill().bfill()
+    if base["usd_brl"].isna().all():
+        raise RuntimeError("A série USD/BRL não contém observações válidas.")
 
     base["indice_prefixado"] = (
         (1 + taxa_prefixada_mensal) ** pd.Series(range(len(base)), index=base.index)
