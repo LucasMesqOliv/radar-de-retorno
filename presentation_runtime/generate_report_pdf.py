@@ -469,7 +469,7 @@ def render_indices():
     draw_line_chart(data.get("periodChart", {}), 72, 125, W - 115, H - 245, False)
     finish_page()
 
-    methodology_page("Fontes: Banco Central do Brasil e Yahoo Finance (^GSPC).")
+    methodology_page("Fontes: Banco Central do Brasil e Yahoo Finance (^GSPC e BRL=X).")
 
 
 def render_fixed_income():

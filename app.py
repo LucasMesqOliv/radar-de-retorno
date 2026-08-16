@@ -4132,6 +4132,56 @@ def baixar_sp500(ano_inicial: int) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=86_400, show_spinner=False)
+def baixar_usd_brl(ano_inicial: int) -> pd.DataFrame:
+    """Lê o USD/BRL local e atualiza somente os meses mais recentes."""
+    codigo_banco = "YAHOO_BRL_X_MENSAL"
+    armazenados = carregar_serie_mercado(codigo_banco)
+    if not armazenados.empty and serie_mercado_atualizada_recentemente(codigo_banco):
+        dados = armazenados.rename(columns={"valor": "usd_brl"})
+        dados["mes"] = dados["data"].dt.to_period("M")
+        return dados.groupby("mes", as_index=False).last()
+    if armazenados.empty:
+        inicio = datetime(ano_inicial, 1, 1, tzinfo=timezone.utc)
+    else:
+        inicio = (
+            armazenados["data"].max() - pd.DateOffset(months=2)
+        ).to_pydatetime().replace(tzinfo=timezone.utc)
+    fim = datetime.now(timezone.utc) + timedelta(days=1)
+    try:
+        resposta = requests.get(
+            "https://query1.finance.yahoo.com/v8/finance/chart/BRL%3DX",
+            params={
+                "period1": int(inicio.timestamp()),
+                "period2": int(fim.timestamp()),
+                "interval": "1mo",
+                "events": "history",
+                "includeAdjustedClose": "false",
+            },
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=30,
+        )
+        resposta.raise_for_status()
+    except requests.RequestException:
+        if armazenados.empty:
+            raise
+        dados = armazenados.rename(columns={"valor": "usd_brl"})
+        dados["mes"] = dados["data"].dt.to_period("M")
+        return dados.groupby("mes", as_index=False).last()
+    resultado = resposta.json()["chart"]["result"][0]
+    novos = pd.DataFrame(
+        {
+            "data": pd.to_datetime(resultado["timestamp"], unit="s", utc=True)
+            .tz_convert(None),
+            "valor": resultado["indicators"]["quote"][0]["close"],
+        }
+    ).dropna()
+    salvar_serie_mercado(codigo_banco, novos)
+    dados = carregar_serie_mercado(codigo_banco).rename(columns={"valor": "usd_brl"})
+    dados["mes"] = dados["data"].dt.to_period("M")
+    return dados.groupby("mes", as_index=False).last()
+
+
+@st.cache_data(ttl=86_400, show_spinner=False)
 def preparar_dados(ano_inicial: int = 2000):
     # SGS 12: CDI diário em percentual ao dia.
     cdi = baixar_serie_bcb(12, ano_inicial)
@@ -4146,24 +4196,34 @@ def preparar_dados(ano_inicial: int = 2000):
     ipca["mes"] = ipca["data"].dt.to_period("M")
 
     sp500 = baixar_sp500(ano_inicial)
-    return cdi_mensal, ipca, sp500
+    usd_brl = baixar_usd_brl(ano_inicial)
+    return cdi_mensal, ipca, sp500, usd_brl
 
 
 def nomes_series(
     taxa_ipca: float,
     taxa_prefixada: float,
     taxa_referencia: float,
-    participacao_sp500: float,
+    participacoes: dict[str, float],
 ) -> dict[str, str]:
+    def com_participacao(rotulo: str, codigo: str) -> str:
+        participacao = participacoes.get(codigo, 100.0)
+        return rotulo if participacao == 100 else f"{participacao:.0f}% do {rotulo}"
+
     return {
-        "cdi": "CDI",
-        "ipca": f"IPCA + {taxa_ipca:.2f}%",
-        "prefixado": f"Prefixado {taxa_prefixada:.2f}% a.a.",
-        "sp500": (
-            f"S&P 500 ({participacao_sp500:.0f}% de participação, USD, preço)"
+        "cdi": com_participacao("CDI", "cdi"),
+        "ipca": com_participacao(f"IPCA + {taxa_ipca:.2f}%", "ipca"),
+        "prefixado": com_participacao(
+            f"Prefixado {taxa_prefixada:.2f}% a.a.", "prefixado"
         ),
-        "sp500_ipca": f"S&P 500 ({participacao_sp500:.0f}%) + IPCA",
-        "referencia": f"Referência {taxa_referencia:.2f}% a.a.",
+        "sp500": com_participacao("S&P 500 (USD, preço)", "sp500"),
+        "sp500_brl": com_participacao("S&P 500 (BRL, preço)", "sp500_brl"),
+        "sp500_ipca": (
+            f"IPCA + {participacoes.get('sp500_ipca', 100.0):.0f}% do S&P 500 (USD)"
+        ),
+        "referencia": com_participacao(
+            f"Referência {taxa_referencia:.2f}% a.a.", "referencia"
+        ),
     }
 
 
@@ -4172,6 +4232,7 @@ COLUNAS_INDICES = {
     "ipca": "indice_ipca",
     "prefixado": "indice_prefixado",
     "sp500": "indice_sp500",
+    "sp500_brl": "indice_sp500_brl",
     "sp500_ipca": "indice_sp500_ipca",
     "referencia": "indice_referencia",
 }
@@ -4181,10 +4242,11 @@ def construir_indices(
     cdi_mensal: pd.DataFrame,
     ipca: pd.DataFrame,
     sp500: pd.DataFrame,
+    usd_brl: pd.DataFrame,
     taxa_ipca: float,
     taxa_prefixada: float,
     taxa_referencia: float,
-    participacao_sp500: float,
+    participacoes: dict[str, float],
 ) -> pd.DataFrame:
     taxa_real_mensal = (1 + taxa_ipca / 100) ** (1 / 12) - 1
     taxa_prefixada_mensal = (1 + taxa_prefixada / 100) ** (1 / 12) - 1
@@ -4208,6 +4270,12 @@ def construir_indices(
         on="mes",
         how="inner",
     ).sort_values("mes")
+    base = pd.merge(
+        base,
+        usd_brl[["mes", "usd_brl"]],
+        on="mes",
+        how="inner",
+    ).sort_values("mes")
 
     base["indice_prefixado"] = (
         (1 + taxa_prefixada_mensal) ** pd.Series(range(len(base)), index=base.index)
@@ -4215,16 +4283,33 @@ def construir_indices(
     base["indice_referencia"] = (
         (1 + taxa_referencia_mensal) ** pd.Series(range(len(base)), index=base.index)
     ) * 100
-    retorno_sp500 = base["indice_sp500"].pct_change().fillna(0)
-    base["indice_sp500"] = (
-        1 + retorno_sp500 * participacao_sp500 / 100
-    ).cumprod() * 100
+    def alavancar(serie: pd.Series, participacao: float) -> pd.Series:
+        retorno = serie.pct_change().fillna(0) * participacao / 100
+        return (1 + retorno).cumprod() * 100
+
+    indice_sp500_original = base["indice_sp500"].copy()
+    indice_sp500_brl_original = indice_sp500_original * base["usd_brl"]
+    base["indice_cdi"] = alavancar(base["indice_cdi"], participacoes.get("cdi", 100))
+    base["indice_ipca"] = alavancar(base["indice_ipca"], participacoes.get("ipca", 100))
+    base["indice_prefixado"] = alavancar(
+        base["indice_prefixado"], participacoes.get("prefixado", 100)
+    )
+    base["indice_referencia"] = alavancar(
+        base["indice_referencia"], participacoes.get("referencia", 100)
+    )
+    base["indice_sp500"] = alavancar(
+        indice_sp500_original, participacoes.get("sp500", 100)
+    )
+    base["indice_sp500_brl"] = alavancar(
+        indice_sp500_brl_original, participacoes.get("sp500_brl", 100)
+    )
     indice_inflacao_rebaseado = (
         base["indice_inflacao"] / base["indice_inflacao"].iloc[0] * 100
     )
-    base["indice_sp500_ipca"] = (
-        base["indice_sp500"] * indice_inflacao_rebaseado / 100
+    sp500_ipca = alavancar(
+        indice_sp500_original, participacoes.get("sp500_ipca", 100)
     )
+    base["indice_sp500_ipca"] = sp500_ipca * indice_inflacao_rebaseado / 100
     base["data"] = base["mes"].dt.to_timestamp("M")
     return base
 
@@ -4233,10 +4318,11 @@ def analisar_janelas(
     cdi_mensal: pd.DataFrame,
     ipca: pd.DataFrame,
     sp500: pd.DataFrame,
+    usd_brl: pd.DataFrame,
     taxa_ipca: float,
     taxa_prefixada: float,
     taxa_referencia: float,
-    participacao_sp500: float,
+    participacoes: dict[str, float],
     prazo_anos: int,
     historico_anos: int,
 ) -> pd.DataFrame:
@@ -4245,10 +4331,11 @@ def analisar_janelas(
         cdi_mensal,
         ipca,
         sp500,
+        usd_brl,
         taxa_ipca,
         taxa_prefixada,
         taxa_referencia,
-        participacao_sp500,
+        participacoes,
     )
 
     for codigo, coluna_indice in COLUNAS_INDICES.items():
@@ -4276,6 +4363,7 @@ def criar_grafico(
         "ipca": "#1B7F5A",
         "prefixado": "#C43D3D",
         "sp500": "#7A4EAB",
+        "sp500_brl": "#008C95",
         "sp500_ipca": "#D47A22",
         "referencia": "#555555",
     }
@@ -4423,6 +4511,7 @@ def criar_grafico_periodo(
         "ipca": "#1B7F5A",
         "prefixado": "#C43D3D",
         "sp500": "#7A4EAB",
+        "sp500_brl": "#008C95",
         "sp500_ipca": "#D47A22",
         "referencia": "#555555",
     }
@@ -4611,12 +4700,15 @@ def montar_dados_apresentacao(
 
     comparacoes = []
     for comparativa in series_comparativas:
-        frequencia = (analise[serie_principal] > analise[comparativa]).mean()
+        vitorias = int((analise[serie_principal] > analise[comparativa]).sum())
+        total_janelas = len(analise)
+        frequencia = vitorias / total_janelas if total_janelas else 0
         comparacoes.append({
             "value": formatar_percentual(frequencia),
             "label": (
                 f"{abreviar_rotulo_serie(nomes[serie_principal], 24)} venceu "
-                f"{abreviar_rotulo_serie(nomes[comparativa], 24)}"
+                f"{abreviar_rotulo_serie(nomes[comparativa], 24)} "
+                f"em {vitorias} de {total_janelas} janelas"
             ),
         })
 
@@ -4638,7 +4730,7 @@ def montar_dados_apresentacao(
 
     return {
         "reportType": "indices",
-        "reportVersion": "indices-v3-sem-retornos-mensais",
+        "reportVersion": "indices-v4-alavancagens-independentes-sp500-brl",
         "generatedAt": f"{meses[hoje.month - 1].capitalize()} de {hoje.year}",
         "summaryTitle": f"{nomes[serie_principal]} em perspectiva histórica",
         "summarySubtitle": (
@@ -4718,7 +4810,8 @@ with st.sidebar:
         "ipca": "IPCA + taxa",
         "prefixado": "Taxa prefixada",
         "sp500": "S&P 500 (USD, preço)",
-        "sp500_ipca": "S&P 500 + IPCA",
+        "sp500_brl": "S&P 500 (BRL, preço)",
+        "sp500_ipca": "IPCA + S&P 500 (USD)",
     }
     codigos = list(rotulos_selecao)
 
@@ -4750,16 +4843,22 @@ with st.sidebar:
         taxa_prefixada = st.number_input(
             "Taxa prefixada (% a.a.)", 0.0, 30.0, 12.0, 0.25
         )
-    participacao_sp500 = 100.0
-    if any(codigo in selecoes for codigo in {"sp500", "sp500_ipca"}):
-        participacao_sp500 = st.number_input(
-            "Participação no S&P 500 (%)",
+    participacoes = {codigo: 100.0 for codigo in COLUNAS_INDICES}
+    st.markdown("##### Participação de cada índice")
+    st.caption(
+        "A participação é independente em cada lado da comparação e multiplica "
+        "os retornos mensais. Em IPCA + S&P, ela se aplica apenas ao S&P."
+    )
+    for codigo in selecoes:
+        participacoes[codigo] = st.number_input(
+            f"Participação — {rotulos_selecao[codigo]} (%)",
             min_value=0.0,
-            max_value=300.0,
+            max_value=1000.0,
             value=100.0,
             step=10.0,
+            key=f"participacao_indice_{codigo}",
             help=(
-                "Multiplica cada retorno mensal do S&P 500. Exemplo: com "
+                "Multiplica cada retorno mensal desta série. Exemplo: com "
                 "participação de 120%, um mês de +5% vira +6% e um mês de "
                 "-5% vira -6%."
             ),
@@ -4778,9 +4877,11 @@ with st.sidebar:
         taxa_ipca,
         taxa_prefixada,
         taxa_referencia,
-        participacao_sp500,
+        participacoes,
     )
-    st.caption("CDI e IPCA: BCB. S&P 500: Yahoo Finance (^GSPC).")
+    st.caption(
+        "CDI e IPCA: BCB. S&P 500 e USD/BRL: Yahoo Finance (^GSPC e BRL=X)."
+    )
 
 series_comparativas_finais = series_comparativas.copy()
 if usar_referencia:
@@ -4792,15 +4893,16 @@ if not series_comparativas_finais:
 
 try:
     with st.spinner("Atualizando séries históricas..."):
-        cdi_mensal, ipca, sp500 = preparar_dados(2000)
+        cdi_mensal, ipca, sp500, usd_brl = preparar_dados(2000)
         analise = analisar_janelas(
             cdi_mensal,
             ipca,
             sp500,
+            usd_brl,
             taxa_ipca,
             taxa_prefixada,
             taxa_referencia,
-            participacao_sp500,
+            participacoes,
             prazo_anos,
             historico_anos,
         )
@@ -4808,10 +4910,11 @@ try:
             cdi_mensal,
             ipca,
             sp500,
+            usd_brl,
             taxa_ipca,
             taxa_prefixada,
             taxa_referencia,
-            participacao_sp500,
+            participacoes,
         )
 
     series_escolhidas = [serie_principal] + series_comparativas_finais
@@ -4819,15 +4922,19 @@ try:
     st.subheader("Frequência histórica")
     colunas = st.columns(len(series_comparativas_finais))
     for coluna, comparativa in zip(colunas, series_comparativas_finais):
-        frequencia = (analise[serie_principal] > analise[comparativa]).mean()
+        vitorias = int((analise[serie_principal] > analise[comparativa]).sum())
+        total_janelas = len(analise)
+        frequencia = vitorias / total_janelas if total_janelas else 0
         principal_curto = abreviar_rotulo_serie(nomes[serie_principal], 24)
         comparativa_curta = abreviar_rotulo_serie(nomes[comparativa], 24)
         coluna.metric(
             f"{principal_curto} venceu {comparativa_curta}",
             f"{frequencia:.1%}",
+            f"{vitorias} de {total_janelas} janelas",
+            delta_color="off",
             help=(
                 f"{nomes[serie_principal]} venceu {nomes[comparativa]} "
-                "nesta proporção das janelas históricas."
+                f"em {vitorias} das {total_janelas} janelas históricas."
             ),
         )
 
