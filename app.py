@@ -4185,6 +4185,13 @@ def baixar_usd_brl(ano_inicial: int) -> pd.DataFrame:
 def preparar_dados(ano_inicial: int = 2000):
     # SGS 12: CDI diário em percentual ao dia.
     cdi = baixar_serie_bcb(12, ano_inicial)
+    cdi = cdi.sort_values("data").drop_duplicates("data", keep="last")
+    # A série 12 é uma taxa diária em pontos percentuais. Registros fora
+    # deste intervalo são falhas de carga/cache e criam picos artificiais
+    # quando entram ou saem de uma janela móvel.
+    cdi = cdi[cdi["valor"].between(0, 1.0)].copy()
+    if cdi.empty:
+        raise RuntimeError("A série do CDI não contém observações diárias válidas.")
     cdi["taxa_cdi_dia"] = cdi["valor"] / 100
     cdi["indice_cdi"] = (1 + cdi["taxa_cdi_dia"]).cumprod() * 100
     cdi["mes"] = cdi["data"].dt.to_period("M")
