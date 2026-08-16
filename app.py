@@ -3540,7 +3540,14 @@ def pagina_renda_fixa():
     hoje = date.today()
     with coluna_datas:
         st.markdown("#### Datas e taxas")
-        data_compra = st.date_input("Data da compra", value=hoje, key="rf_data_compra")
+        data_compra = st.date_input(
+            "Data da compra",
+            value=hoje,
+            min_value=date(1990, 1, 1),
+            max_value=date(2099, 12, 30),
+            format="DD/MM/YYYY",
+            key="rf_data_compra",
+        )
         modo_vencimento = st.radio(
             "Definir vencimento por",
             ["Prazo desejado", "Data específica"],
@@ -3562,9 +3569,19 @@ def pagina_renda_fixa():
             ).date()
             st.caption(f"Vencimento calculado: {data_vencimento:%d/%m/%Y}")
         else:
+            vencimento_padrao = min(
+                (
+                    pd.Timestamp(data_compra)
+                    + pd.DateOffset(years=10)
+                ).date(),
+                date(2100, 12, 31),
+            )
             data_vencimento = st.date_input(
                 "Data específica de vencimento",
-                value=date(2065, 5, 15),
+                value=vencimento_padrao,
+                min_value=(pd.Timestamp(data_compra) + pd.DateOffset(days=1)).date(),
+                max_value=date(2100, 12, 31),
+                format="DD/MM/YYYY",
                 key="rf_data_vencimento",
             )
         saida_padrao = min(
@@ -3572,7 +3589,12 @@ def pagina_renda_fixa():
             data_vencimento,
         )
         data_saida = st.date_input(
-            "Data da saída antecipada", value=saida_padrao, key="rf_data_saida"
+            "Data da saída antecipada",
+            value=saida_padrao,
+            min_value=(pd.Timestamp(data_compra) + pd.DateOffset(days=1)).date(),
+            max_value=data_vencimento,
+            format="DD/MM/YYYY",
+            key="rf_data_saida",
         )
         rotulo_taxa = "Taxa real" if indexador == "IPCA + taxa real" else "Taxa nominal"
         taxa_compra_pct = st.number_input(
