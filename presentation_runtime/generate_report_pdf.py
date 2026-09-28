@@ -197,6 +197,83 @@ def draw_metric_cards(items, top, columns=4):
     return top - rows * (card_height + gap)
 
 
+def draw_heatmap_table(heatmap, top, start_column=0, end_column=None):
+    columns = heatmap.get("columns", [])
+    row_labels = heatmap.get("rowLabels", [])
+    values = heatmap.get("values", [])
+    texts = heatmap.get("texts", [])
+    if end_column is None:
+        end_column = len(columns)
+    selected_columns = columns[start_column:end_column]
+    if not selected_columns or not row_labels:
+        return top
+
+    rows = [["Taxa no cenário", *selected_columns]]
+    for row_index, label in enumerate(row_labels):
+        row_texts = texts[row_index][start_column:end_column]
+        rows.append([label, *row_texts])
+
+    first_width = 145
+    cell_width = (W - 2 * MARGIN - first_width) / len(selected_columns)
+    prepared = []
+    for row_index, row in enumerate(rows):
+        prepared.append([
+            paragraph_cell(
+                value,
+                6.2 if row_index else 6.5,
+                bold=row_index == 0 or (row_index - 1) == heatmap.get("currentRow"),
+                color=WHITE if row_index == 0 else INK,
+            )
+            for value in row
+        ])
+
+    table = Table(
+        prepared,
+        colWidths=[first_width] + [cell_width] * len(selected_columns),
+    )
+    commands = [
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("GRID", (0, 0), (-1, -1), 0.35, GRID),
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("BACKGROUND", (0, 1), (0, -1), LIGHT),
+    ]
+    flat_values = [
+        float(value)
+        for row in values
+        for value in row
+    ]
+    minimum = min(flat_values) if flat_values else 0
+    maximum = max(flat_values) if flat_values else 1
+    amplitude = maximum - minimum or 1
+    palette = ["#F7B7BD", "#FDE8D2", "#FFF5C7", "#D9F2D8", "#72D69B"]
+    for row_index, row_values in enumerate(values, start=1):
+        for column_index, value in enumerate(
+            row_values[start_column:end_column], start=1
+        ):
+            ratio = (float(value) - minimum) / amplitude
+            palette_index = min(len(palette) - 1, int(ratio * len(palette)))
+            commands.append(
+                ("BACKGROUND", (column_index, row_index), (column_index, row_index),
+                 colors.HexColor(palette[palette_index]))
+            )
+    current_row = heatmap.get("currentRow")
+    if isinstance(current_row, int) and 0 <= current_row < len(row_labels):
+        table_row = current_row + 1
+        commands.extend([
+            ("LINEABOVE", (0, table_row), (-1, table_row), 1.8, GOLD),
+            ("LINEBELOW", (0, table_row), (-1, table_row), 1.8, GOLD),
+        ])
+    table.setStyle(TableStyle(commands))
+    _, height = table.wrap(W - 2 * MARGIN, H)
+    table.drawOn(c, MARGIN, top - height)
+    return top - height
+
+
 def draw_line_chart(
     chart, x, y, width, height, percent_axis=False, percentage_points=False
 ):
@@ -498,6 +575,18 @@ def render_fixed_income():
         chart["categories"] = [f"{value:.1f}%" for value in first_series[0].get("x", [])]
     draw_line_chart(chart, 72, 125, W - 115, H - 245, percentage_points=True)
     finish_page()
+
+    heatmap = data.get("heatmap", {})
+    heatmap_columns = heatmap.get("columns", [])
+    for start_column in range(0, len(heatmap_columns), 8):
+        end_column = min(start_column + 8, len(heatmap_columns))
+        continuation = "" if start_column == 0 else " - continuação"
+        page_header(
+            "Mapa de calor de retorno" + continuation,
+            "Retorno acumulado por data de saída e taxa de mercado. A linha dourada representa o carrego na curva.",
+        )
+        draw_heatmap_table(heatmap, H - 115, start_column, end_column)
+        finish_page()
 
     page_header("Cenários de taxa")
     scenarios = data.get("scenarios", {})

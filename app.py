@@ -3475,6 +3475,39 @@ def fator_inflacao(data_inicial, data_final, ipca_anual: float) -> float:
     return (1 + ipca_anual) ** anos_entre_datas(data_inicial, data_final)
 
 
+def calcular_valor_saida_cenario(
+    fluxos,
+    data_compra,
+    data_saida,
+    taxa_mercado: float,
+    ipca_anual: float,
+    indexado_ipca: bool,
+    unidades: float,
+) -> float:
+    """Reprecifica o título e soma os fluxos recebidos até a data de saída."""
+    fator_saida = (
+        fator_inflacao(data_compra, data_saida, ipca_anual)
+        if indexado_ipca
+        else 1.0
+    )
+    preco_saida = (
+        precificar_fluxos_titulo(fluxos, data_saida, taxa_mercado)
+        * fator_saida
+    )
+    fluxos_recebidos = 0.0
+    for fluxo in fluxos:
+        if pd.Timestamp(data_compra) < fluxo["data"] <= pd.Timestamp(data_saida):
+            fator_fluxo = (
+                fator_inflacao(data_compra, fluxo["data"], ipca_anual)
+                if indexado_ipca
+                else 1.0
+            )
+            fluxos_recebidos += (
+                fluxo["cupom"] + fluxo["principal"]
+            ) * fator_fluxo
+    return (preco_saida + fluxos_recebidos) * unidades
+
+
 def pagina_renda_fixa():
     cabecalho_contextual("Renda fixa", "Simulador educacional")
     st.markdown(
@@ -3731,6 +3764,178 @@ def pagina_renda_fixa():
         )
         st.caption("Os cupons recebidos são somados ao resultado sem hipótese de reinvestimento.")
 
+    st.markdown("### Mapa de calor de retorno")
+    st.caption(
+        "Compare o retorno total para diferentes datas de saída e taxas de mercado. "
+        "A linha destacada representa a taxa de compra, isto é, o carrego na curva."
+    )
+    controle_minimo, controle_maximo, controle_passo, controle_horizonte = st.columns(4)
+    variacao_minima_pct = controle_minimo.number_input(
+        "Variação mínima da taxa (p.p.)",
+        min_value=-10.0,
+        max_value=0.0,
+        value=-1.5,
+        step=0.25,
+        key="rf_heatmap_variacao_minima",
+    )
+    variacao_maxima_pct = controle_maximo.number_input(
+        "Variação máxima da taxa (p.p.)",
+        min_value=0.0,
+        max_value=10.0,
+        value=1.5,
+        step=0.25,
+        key="rf_heatmap_variacao_maxima",
+    )
+    intervalo_variacao_pct = controle_passo.selectbox(
+        "Intervalo da variação (p.p.)",
+        [0.10, 0.25, 0.50, 1.00],
+        index=1,
+        format_func=lambda valor: f"{valor:.2f}".replace(".", ","),
+        key="rf_heatmap_intervalo",
+    )
+    prazo_total_mapa = anos_entre_datas(data_compra, data_vencimento)
+    horizonte_padrao = max(1, min(8, int(prazo_total_mapa) + 1))
+    horizonte_mapa = controle_horizonte.number_input(
+        "Horizonte do mapa (anos)",
+        min_value=1,
+        max_value=15,
+        value=horizonte_padrao,
+        step=1,
+        key="rf_heatmap_horizonte",
+    )
+
+    minimo_bps = int(round(variacao_minima_pct * 100))
+    maximo_bps = int(round(variacao_maxima_pct * 100))
+    passo_bps = max(1, int(round(intervalo_variacao_pct * 100)))
+    choques_heatmap_bps = list(range(minimo_bps, maximo_bps + 1, passo_bps))
+    if not choques_heatmap_bps or choques_heatmap_bps[-1] != maximo_bps:
+        choques_heatmap_bps.append(maximo_bps)
+    if 0 not in choques_heatmap_bps:
+        choques_heatmap_bps.append(0)
+    choques_heatmap_bps = sorted(set(choques_heatmap_bps))
+
+    datas_heatmap = []
+    rotulos_datas_heatmap = []
+    for ano_saida in range(1, int(horizonte_mapa) + 1):
+        data_candidata = (
+            pd.Timestamp(data_compra) + pd.DateOffset(years=ano_saida)
+        )
+        data_candidata = min(data_candidata, pd.Timestamp(data_vencimento))
+        if data_candidata <= pd.Timestamp(data_compra):
+            continue
+        if datas_heatmap and data_candidata == datas_heatmap[-1]:
+            break
+        datas_heatmap.append(data_candidata)
+        rotulos_datas_heatmap.append(
+            f"{ano_saida} {'ano' if ano_saida == 1 else 'anos'}<br>"
+            f"{data_candidata:%d/%m/%Y}"
+        )
+        if data_candidata >= pd.Timestamp(data_vencimento):
+            break
+
+    valores_heatmap = []
+    textos_heatmap = []
+    rotulos_taxas_heatmap = []
+    for choque_bps in choques_heatmap_bps:
+        taxa_cenario = max(-0.99, taxa_compra + choque_bps / 10_000)
+        linha_valores = []
+        linha_textos = []
+        for data_cenario in datas_heatmap:
+            valor_cenario = calcular_valor_saida_cenario(
+                fluxos,
+                data_compra,
+                data_cenario,
+                taxa_cenario,
+                ipca_anual,
+                indexador == "IPCA + taxa real",
+                unidades,
+            )
+            retorno_cenario = valor_cenario / valor_investido - 1
+            linha_valores.append(retorno_cenario * 100)
+            linha_textos.append(f"{retorno_cenario:.1%}".replace(".", ","))
+        valores_heatmap.append(linha_valores)
+        textos_heatmap.append(linha_textos)
+        variacao_pp = choque_bps / 100
+        rotulos_taxas_heatmap.append(
+            f"{taxa_cenario:.2%}".replace(".", ",")
+            + f" ({variacao_pp:+.2f} p.p.)".replace(".", ",")
+        )
+
+    posicoes_x_heatmap = list(range(len(datas_heatmap)))
+    posicoes_y_heatmap = list(range(len(choques_heatmap_bps)))
+    fig_heatmap = go.Figure(
+        data=go.Heatmap(
+            z=valores_heatmap,
+            x=posicoes_x_heatmap,
+            y=posicoes_y_heatmap,
+            text=textos_heatmap,
+            texttemplate="%{text}",
+            textfont={"size": 11},
+            colorscale=[
+                [0.0, "#f7b7bd"],
+                [0.35, "#fde8d2"],
+                [0.55, "#fff5c7"],
+                [0.75, "#d9f2d8"],
+                [1.0, "#72d69b"],
+            ],
+            colorbar={"title": "Retorno<br>total", "ticksuffix": "%"},
+            hovertemplate=(
+                "Saída: %{customdata[0]}<br>Taxa: %{customdata[1]}"
+                "<br>Retorno total: %{text}"
+                "<extra></extra>"
+            ),
+            customdata=[
+                [
+                    [data_saida.strftime("%d/%m/%Y"), rotulo_taxa_cenario]
+                    for data_saida in datas_heatmap
+                ]
+                for rotulo_taxa_cenario in rotulos_taxas_heatmap
+            ],
+        )
+    )
+    linha_carrego = choques_heatmap_bps.index(0)
+    fig_heatmap.add_shape(
+        type="rect",
+        x0=-0.5,
+        x1=len(datas_heatmap) - 0.5,
+        y0=linha_carrego - 0.5,
+        y1=linha_carrego + 0.5,
+        line={"color": "#e2a126", "width": 3},
+        fillcolor="rgba(0,0,0,0)",
+    )
+    fig_heatmap.update_layout(
+        height=max(500, 205 + 31 * len(choques_heatmap_bps)),
+        margin={"l": 25, "r": 25, "t": 55, "b": 45},
+        xaxis={
+            "title": "Data de saída",
+            "tickmode": "array",
+            "tickvals": posicoes_x_heatmap,
+            "ticktext": rotulos_datas_heatmap,
+            "side": "top",
+            "fixedrange": True,
+        },
+        yaxis={
+            "title": f"{rotulo_taxa} no cenário",
+            "tickmode": "array",
+            "tickvals": posicoes_y_heatmap,
+            "ticktext": rotulos_taxas_heatmap,
+            "autorange": "reversed",
+            "fixedrange": True,
+        },
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        dragmode=False,
+    )
+    st.plotly_chart(
+        fig_heatmap,
+        width="stretch",
+        config={"displayModeBar": False, "displaylogo": False},
+    )
+    st.caption(
+        "Retorno bruto acumulado desde a compra, com cupons somados sem "
+        "reinvestimento. Para IPCA+, os fluxos são corrigidos pela inflação projetada."
+    )
+
     cenarios = []
     for choque_bps in range(-300, 301, 25):
         taxa_cenario = max(-0.99, taxa_compra + choque_bps / 10_000)
@@ -3958,6 +4163,16 @@ def pagina_renda_fixa():
                 }
                 for trace in fig_assimetria.data
             ]
+        },
+        "heatmap": {
+            "columns": [rotulo.replace("<br>", " - ") for rotulo in rotulos_datas_heatmap],
+            "rowLabels": rotulos_taxas_heatmap,
+            "values": [
+                [float(valor) for valor in linha]
+                for linha in valores_heatmap
+            ],
+            "texts": textos_heatmap,
+            "currentRow": linha_carrego,
         },
         "scenarios": {
             "columns": ["Cenário", "Taxa na saída", "Impacto da taxa", "Retorno total", "Valor estimado"],
