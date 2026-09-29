@@ -20,6 +20,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from renda_fixa_visual import ESCALA_CARREGO, comparar_com_carrego
 
 from radar_database import (
     cadastro_fundos_atualizado_recentemente,
@@ -3508,7 +3509,54 @@ def calcular_valor_saida_cenario(
     return (preco_saida + fluxos_recebidos) * unidades
 
 
+def alternar_secao_renda_fixa(chave):
+    st.session_state[chave] = not st.session_state[chave]
+
+
+def secao_renda_fixa(titulo, codigo, aberta=True):
+    """Cabeçalho recolhível com estado persistente, também usado no PDF."""
+    chave = f"rf_secao_{codigo}"
+    st.session_state.setdefault(chave, aberta)
+    aberta = st.session_state[chave]
+    with st.container(key=f"rf_cabecalho_{codigo}"):
+        st.button(
+            f"{titulo} · {'Recolher' if aberta else 'Exibir'}",
+            icon=":material/expand_more:" if aberta else ":material/chevron_right:",
+            width="stretch",
+            key=f"rf_alternar_{codigo}",
+            on_click=alternar_secao_renda_fixa,
+            args=(chave,),
+            help="Seção aberta: incluída no PDF. Seção recolhida: excluída do PDF.",
+        )
+    return aberta
+
+
 def pagina_renda_fixa():
+    # Preserva ajustes dos controles quando suas seções ficam recolhidas.
+    for chave in list(st.session_state):
+        if chave.startswith("rf_heatmap_") or chave == "rf_anos_sensibilidade":
+            st.session_state[chave] = st.session_state[chave]
+    st.markdown("""
+        <style>
+        .rf-comparacao { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+        .rf-painel { background:#fff; border:1px solid #dbe3eb; border-radius:10px;
+                     padding:14px 18px; }
+        .rf-painel h4 { margin:0 0 10px; padding:0; font-size:16px; color:#132b49; }
+        .rf-painel:first-child { border-left:3px solid #1769e0; }
+        .rf-painel:last-child { border-left:3px solid #7b91a5; }
+        .rf-retornos { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+        .rf-retornos span { display:block; color:#52667c; font-size:12px; }
+        .rf-retornos strong { color:#132b49; font-size:25px; font-weight:600; }
+        .rf-patrimonio { border-top:1px solid #edf1f5; margin-top:10px;
+                         padding-top:8px; color:#52667c; font-size:12px; }
+        .rf-efeito { margin:10px 0 4px; padding:10px 14px; background:#eef3f8;
+                     border-radius:7px; font-size:13px; color:#253e58; }
+        [class*="st-key-rf_cabecalho_"] button { justify-content:flex-start;
+                     border-color:#dbe3eb; box-shadow:none; min-height:42px; }
+        [class*="st-key-rf_cabecalho_"] button p { font-size:15px; font-weight:600; }
+        @media(max-width:640px) { .rf-comparacao { grid-template-columns:1fr; } }
+        </style>
+    """, unsafe_allow_html=True)
     cabecalho_contextual("Renda fixa", "Simulador educacional")
     st.markdown(
         """
@@ -3524,7 +3572,7 @@ def pagina_renda_fixa():
         unsafe_allow_html=True,
     )
 
-    with st.container(border=True):
+    with st.expander("Como funciona a simulação", expanded=False):
         st.markdown("#### Como interpretar")
         st.write(
             "Quando a taxa exigida pelo mercado cai, o preço do título tende a subir; "
@@ -3545,11 +3593,8 @@ def pagina_renda_fixa():
             ["Prefixado", "IPCA + taxa real"],
             key="rf_indexador",
         )
-        emissor = st.selectbox(
-            "Referência",
-            ["Título público / referência teórica", "Título privado"],
-            key="rf_emissor",
-        )
+        emissor = "Título público / referência teórica"
+        st.caption("Títulos públicos · precificação teórica dos fluxos")
         estrutura = st.selectbox(
             "Pagamento dos juros",
             ["Sem cupom (bullet)", "Cupom semestral", "Cupom anual"],
@@ -3730,211 +3775,257 @@ def pagina_renda_fixa():
     retorno_anualizado = (
         (1 + retorno_total) ** (1 / prazo_saida) - 1 if prazo_saida > 0 else 0.0
     )
+    retorno_carrego_anualizado = (1 + retorno_carrego) ** (1 / prazo_saida) - 1
     efeito_taxa = valor_saida - valor_carrego
     duration_macaulay, duration_modificada, convexidade = metricas_risco_titulo(
         fluxos, data_compra, taxa_compra
     )
     dv01_total = duration_modificada * valor_investido * 0.0001
 
+    pct_rf = lambda valor: f"{valor:.2%}".replace(".", ",")
+    diferenca_pp = (retorno_total - retorno_carrego) * 100
+    efeito_texto = f"{diferenca_pp:+.2f}".replace(".", ",") + " p.p."
     st.markdown("### Resultado da simulação")
-    metricas_linha_1 = st.columns(4)
-    metricas_linha_1[0].metric("Preço teórico na compra", formatar_reais(preco_compra_unitario))
-    metricas_linha_1[1].metric("Valor estimado na saída", formatar_reais(valor_saida))
-    metricas_linha_1[2].metric("Retorno total", f"{retorno_total:.2%}")
-    metricas_linha_1[3].metric("Retorno anualizado", f"{retorno_anualizado:.2%}")
-    metricas_linha_2 = st.columns(5)
-    metricas_linha_2[0].metric("Duration Macaulay", f"{duration_macaulay:.2f} anos")
-    metricas_linha_2[1].metric("Duration modificada", f"{duration_modificada:.2f} anos")
-    metricas_linha_2[2].metric("Convexidade", f"{convexidade:.2f}")
-    metricas_linha_2[3].metric("DV01 da posição", formatar_reais(dv01_total))
-    metricas_linha_2[4].metric("Efeito da taxa na saída", formatar_reais(efeito_taxa))
-
-    with st.container(border=True):
-        st.markdown("#### De onde veio o resultado?")
-        colunas_resultado = st.columns(3)
-        colunas_resultado[0].metric("Retorno de carrego", f"{retorno_carrego:.2%}")
-        colunas_resultado[1].metric(
-            "Cupons/principal recebidos",
-            formatar_reais(fluxos_recebidos_unitario * unidades),
-        )
-        colunas_resultado[2].metric(
-            "Marcação a mercado",
-            f"{efeito_taxa / valor_investido:.2%}",
-            help="Diferença em relação ao cenário em que a taxa de compra permanecesse igual.",
-        )
-        st.caption("Os cupons recebidos são somados ao resultado sem hipótese de reinvestimento.")
-
-    st.markdown("### Mapa de calor de retorno")
     st.caption(
-        "Compare o retorno total para diferentes datas de saída e taxas de mercado. "
-        "A linha destacada representa a taxa de compra, isto é, o carrego na curva."
+        f"Compra em {data_compra:%d/%m/%Y} · Saída em {data_saida:%d/%m/%Y} · "
+        f"Investimento: {formatar_reais(valor_investido)}"
     )
-    controle_minimo, controle_maximo, controle_passo, controle_horizonte = st.columns(4)
-    variacao_minima_pct = controle_minimo.number_input(
-        "Variação mínima da taxa (p.p.)",
-        min_value=-10.0,
-        max_value=0.0,
-        value=-1.5,
-        step=0.25,
-        key="rf_heatmap_variacao_minima",
+    st.markdown(f"""
+        <div class="rf-comparacao">
+          <section class="rf-painel">
+            <h4>A mercado</h4>
+            <div class="rf-retornos">
+              <div><span>Retorno total a mercado</span><strong>{pct_rf(retorno_total)}</strong></div>
+              <div><span>Retorno anualizado a mercado</span><strong>{pct_rf(retorno_anualizado)}</strong></div>
+            </div>
+            <div class="rf-patrimonio">Patrimônio na saída: <b>{formatar_reais(valor_saida)}</b>
+              · taxa de saída {pct_rf(taxa_saida)} a.a.</div>
+          </section>
+          <section class="rf-painel">
+            <h4>Na curva · carrego</h4>
+            <div class="rf-retornos">
+              <div><span>Retorno total na curva</span><strong>{pct_rf(retorno_carrego)}</strong></div>
+              <div><span>Retorno anualizado na curva</span><strong>{pct_rf(retorno_carrego_anualizado)}</strong></div>
+            </div>
+            <div class="rf-patrimonio">Patrimônio na curva: <b>{formatar_reais(valor_carrego)}</b>
+              · taxa de compra {pct_rf(taxa_compra)} a.a.</div>
+          </section>
+        </div>
+        <div class="rf-efeito"><b>Efeito da mudança de taxa: {efeito_texto}</b>
+          sobre o retorno na curva ({formatar_reais(efeito_taxa)}).
+          {pct_rf(retorno_carrego)} na curva + ({efeito_texto}) = {pct_rf(retorno_total)} a mercado.</div>
+    """, unsafe_allow_html=True)
+    st.caption(
+        "Ambos os patrimônios incluem cupons/principal recebidos, sem reinvestimento: "
+        f"{formatar_reais(fluxos_recebidos_unitario * unidades)}. "
+        "Retornos brutos; anualizado é a taxa equivalente do resultado total."
     )
-    variacao_maxima_pct = controle_maximo.number_input(
-        "Variação máxima da taxa (p.p.)",
-        min_value=0.0,
-        max_value=10.0,
-        value=1.5,
-        step=0.25,
-        key="rf_heatmap_variacao_maxima",
-    )
-    intervalo_variacao_pct = controle_passo.selectbox(
-        "Intervalo da variação (p.p.)",
-        [0.10, 0.25, 0.50, 1.00],
-        index=1,
-        format_func=lambda valor: f"{valor:.2f}".replace(".", ","),
-        key="rf_heatmap_intervalo",
-    )
-    prazo_total_mapa = anos_entre_datas(data_compra, data_vencimento)
-    horizonte_padrao = max(1, min(8, int(prazo_total_mapa) + 1))
-    horizonte_mapa = controle_horizonte.number_input(
-        "Horizonte do mapa (anos)",
-        min_value=1,
-        max_value=15,
-        value=horizonte_padrao,
-        step=1,
-        key="rf_heatmap_horizonte",
-    )
+    st.caption("Abra ou recolha as análises abaixo. O PDF inclui somente as seções abertas.")
+    secoes_pdf = {}
+    secoes_pdf["risk"] = secao_renda_fixa("Detalhes do título e risco", "risk", aberta=False)
+    detalhes_risco = [
+        ["Preço teórico na compra", formatar_reais(preco_compra_unitario)],
+        ["Duration Macaulay", f"{duration_macaulay:.2f} anos".replace(".", ",")],
+        ["Duration modificada", f"{duration_modificada:.2f} anos".replace(".", ",")],
+        ["Convexidade", f"{convexidade:.2f}".replace(".", ",")],
+        ["DV01 da posição", formatar_reais(dv01_total)],
+    ]
+    if secoes_pdf["risk"]:
+        st.dataframe(pd.DataFrame(detalhes_risco, columns=["Indicador", "Valor"]),
+                     hide_index=True, width="stretch")
+        st.caption("DV01: variação aproximada do preço para 0,01 p.p. de mudança na taxa.")
 
-    minimo_bps = int(round(variacao_minima_pct * 100))
-    maximo_bps = int(round(variacao_maxima_pct * 100))
-    passo_bps = max(1, int(round(intervalo_variacao_pct * 100)))
-    choques_heatmap_bps = list(range(minimo_bps, maximo_bps + 1, passo_bps))
-    if not choques_heatmap_bps or choques_heatmap_bps[-1] != maximo_bps:
-        choques_heatmap_bps.append(maximo_bps)
-    if 0 not in choques_heatmap_bps:
-        choques_heatmap_bps.append(0)
-    choques_heatmap_bps = sorted(set(choques_heatmap_bps))
-
-    datas_heatmap = []
-    rotulos_datas_heatmap = []
-    for ano_saida in range(1, int(horizonte_mapa) + 1):
-        data_candidata = (
-            pd.Timestamp(data_compra) + pd.DateOffset(years=ano_saida)
+    secoes_pdf["heatmap"] = secao_renda_fixa("Mapa de calor de retorno", "heatmap")
+    dados_mapa = {}
+    if secoes_pdf["heatmap"]:
+        st.caption(
+            "Compare o retorno total para diferentes datas de saída e taxas de mercado. "
+            "A linha destacada representa a taxa de compra, isto é, o carrego na curva."
         )
-        data_candidata = min(data_candidata, pd.Timestamp(data_vencimento))
-        if data_candidata <= pd.Timestamp(data_compra):
-            continue
-        if datas_heatmap and data_candidata == datas_heatmap[-1]:
-            break
-        datas_heatmap.append(data_candidata)
-        rotulos_datas_heatmap.append(
-            f"{ano_saida} {'ano' if ano_saida == 1 else 'anos'}<br>"
-            f"{data_candidata:%d/%m/%Y}"
+        controle_minimo, controle_maximo, controle_passo, controle_horizonte = st.columns(4)
+        variacao_minima_pct = controle_minimo.number_input(
+            "Variação mínima da taxa (p.p.)",
+            min_value=-10.0,
+            max_value=0.0,
+            value=-1.5,
+            step=0.25,
+            key="rf_heatmap_variacao_minima",
         )
-        if data_candidata >= pd.Timestamp(data_vencimento):
-            break
+        variacao_maxima_pct = controle_maximo.number_input(
+            "Variação máxima da taxa (p.p.)",
+            min_value=0.0,
+            max_value=10.0,
+            value=1.5,
+            step=0.25,
+            key="rf_heatmap_variacao_maxima",
+        )
+        intervalo_variacao_pct = controle_passo.selectbox(
+            "Intervalo da variação (p.p.)",
+            [0.10, 0.25, 0.50, 1.00],
+            index=1,
+            format_func=lambda valor: f"{valor:.2f}".replace(".", ","),
+            key="rf_heatmap_intervalo",
+        )
+        prazo_total_mapa = anos_entre_datas(data_compra, data_vencimento)
+        horizonte_padrao = max(1, min(8, int(prazo_total_mapa) + 1))
+        horizonte_mapa = controle_horizonte.number_input(
+            "Horizonte do mapa (anos)",
+            min_value=1,
+            max_value=15,
+            value=horizonte_padrao,
+            step=1,
+            key="rf_heatmap_horizonte",
+        )
 
-    valores_heatmap = []
-    textos_heatmap = []
-    rotulos_taxas_heatmap = []
-    for choque_bps in choques_heatmap_bps:
-        taxa_cenario = max(-0.99, taxa_compra + choque_bps / 10_000)
-        linha_valores = []
-        linha_textos = []
-        for data_cenario in datas_heatmap:
-            valor_cenario = calcular_valor_saida_cenario(
-                fluxos,
-                data_compra,
-                data_cenario,
-                taxa_cenario,
-                ipca_anual,
-                indexador == "IPCA + taxa real",
-                unidades,
+        minimo_bps = int(round(variacao_minima_pct * 100))
+        maximo_bps = int(round(variacao_maxima_pct * 100))
+        passo_bps = max(1, int(round(intervalo_variacao_pct * 100)))
+        choques_heatmap_bps = list(range(minimo_bps, maximo_bps + 1, passo_bps))
+        if not choques_heatmap_bps or choques_heatmap_bps[-1] != maximo_bps:
+            choques_heatmap_bps.append(maximo_bps)
+        if 0 not in choques_heatmap_bps:
+            choques_heatmap_bps.append(0)
+        choques_heatmap_bps = sorted(set(choques_heatmap_bps))
+
+        datas_heatmap = []
+        rotulos_datas_heatmap = []
+        for ano_saida in range(1, int(horizonte_mapa) + 1):
+            data_candidata = (
+                pd.Timestamp(data_compra) + pd.DateOffset(years=ano_saida)
             )
-            retorno_cenario = valor_cenario / valor_investido - 1
-            linha_valores.append(retorno_cenario * 100)
-            linha_textos.append(f"{retorno_cenario:.1%}".replace(".", ","))
-        valores_heatmap.append(linha_valores)
-        textos_heatmap.append(linha_textos)
-        variacao_pp = choque_bps / 100
-        rotulos_taxas_heatmap.append(
-            f"{taxa_cenario:.2%}".replace(".", ",")
-            + f" ({variacao_pp:+.2f} p.p.)".replace(".", ",")
+            data_candidata = min(data_candidata, pd.Timestamp(data_vencimento))
+            if data_candidata <= pd.Timestamp(data_compra):
+                continue
+            if datas_heatmap and data_candidata == datas_heatmap[-1]:
+                break
+            datas_heatmap.append(data_candidata)
+            rotulo_prazo = (
+                "Vencimento" if data_candidata == pd.Timestamp(data_vencimento)
+                else f"{ano_saida} {'ano' if ano_saida == 1 else 'anos'}"
+            )
+            rotulos_datas_heatmap.append(f"{rotulo_prazo}<br>{data_candidata:%d/%m/%Y}")
+            if data_candidata >= pd.Timestamp(data_vencimento):
+                break
+
+        valores_heatmap = []
+        textos_heatmap = []
+        rotulos_taxas_heatmap = []
+        for choque_bps in choques_heatmap_bps:
+            taxa_cenario = max(-0.99, taxa_compra + choque_bps / 10_000)
+            linha_valores = []
+            linha_textos = []
+            for data_cenario in datas_heatmap:
+                valor_cenario = calcular_valor_saida_cenario(
+                    fluxos,
+                    data_compra,
+                    data_cenario,
+                    taxa_cenario,
+                    ipca_anual,
+                    indexador == "IPCA + taxa real",
+                    unidades,
+                )
+                retorno_cenario = valor_cenario / valor_investido - 1
+                linha_valores.append(retorno_cenario * 100)
+                linha_textos.append(f"{retorno_cenario:.1%}".replace(".", ","))
+            valores_heatmap.append(linha_valores)
+            textos_heatmap.append(linha_textos)
+            variacao_pp = choque_bps / 100
+            rotulos_taxas_heatmap.append(
+                f"{taxa_cenario:.2%}".replace(".", ",")
+                + " (" + f"{variacao_pp:+.2f}".replace(".", ",") + " p.p.)"
+            )
+
+        linha_carrego = choques_heatmap_bps.index(0)
+        diferencas_heatmap, intensidade_heatmap = comparar_com_carrego(
+            valores_heatmap, linha_carrego
+        )
+        posicoes_x_heatmap = list(range(len(datas_heatmap)))
+        posicoes_y_heatmap = list(range(len(choques_heatmap_bps)))
+        fig_heatmap = go.Figure(
+            data=go.Heatmap(
+                z=intensidade_heatmap,
+                x=posicoes_x_heatmap,
+                y=posicoes_y_heatmap,
+                text=textos_heatmap,
+                texttemplate="%{text}",
+                textfont={"size": 11, "color": "#132238"},
+                colorscale=ESCALA_CARREGO,
+                zmin=-1,
+                zmax=1,
+                zmid=0,
+                xgap=1,
+                ygap=1,
+                showscale=False,
+                hovertemplate=(
+                    "Saída: %{customdata[0]}<br>Taxa: %{customdata[1]}"
+                    "<br>Retorno total: %{text}"
+                    "<br>Na curva: %{customdata[2]}"
+                    "<br>Diferença vs. curva: %{customdata[3]}"
+                    "<extra></extra>"
+                ),
+                customdata=[
+                    [
+                        [data_cenario.strftime("%d/%m/%Y"), rotulo_taxa_cenario,
+                         textos_heatmap[linha_carrego][j],
+                         f"{diferencas_heatmap[i][j]:+.2f}".replace(".", ",") + " p.p."]
+                        for j, data_cenario in enumerate(datas_heatmap)
+                    ]
+                    for i, rotulo_taxa_cenario in enumerate(rotulos_taxas_heatmap)
+                ],
+            )
+        )
+        fig_heatmap.add_shape(
+            type="rect",
+            x0=-0.5,
+            x1=len(datas_heatmap) - 0.5,
+            y0=linha_carrego - 0.5,
+            y1=linha_carrego + 0.5,
+            line={"color": "#e2a126", "width": 3},
+            fillcolor="rgba(0,0,0,0)",
+        )
+        fig_heatmap.update_layout(
+            height=max(340, 145 + 28 * len(choques_heatmap_bps)),
+            margin={"l": 25, "r": 25, "t": 55, "b": 45},
+            xaxis={
+                "title": "Data de saída",
+                "tickmode": "array",
+                "tickvals": posicoes_x_heatmap,
+                "ticktext": rotulos_datas_heatmap,
+                "side": "top",
+                "fixedrange": True,
+            },
+            yaxis={
+                "title": f"{rotulo_taxa} no cenário",
+                "tickmode": "array",
+                "tickvals": posicoes_y_heatmap,
+                "ticktext": rotulos_taxas_heatmap,
+                "autorange": "reversed",
+                "fixedrange": True,
+            },
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            dragmode=False,
+        )
+        st.plotly_chart(
+            fig_heatmap,
+            width="stretch",
+            config={"displayModeBar": False, "displaylogo": False},
+        )
+        st.caption(
+            "Verde: acima do carrego · Neutro: na curva · Vermelho: abaixo do carrego. "
+            "A intensidade é relativa a cada coluna; as células mostram o retorno total. "
+            "Para IPCA+, os retornos nominais incluem a inflação projetada."
         )
 
-    posicoes_x_heatmap = list(range(len(datas_heatmap)))
-    posicoes_y_heatmap = list(range(len(choques_heatmap_bps)))
-    fig_heatmap = go.Figure(
-        data=go.Heatmap(
-            z=valores_heatmap,
-            x=posicoes_x_heatmap,
-            y=posicoes_y_heatmap,
-            text=textos_heatmap,
-            texttemplate="%{text}",
-            textfont={"size": 11},
-            colorscale=[
-                [0.0, "#f7b7bd"],
-                [0.35, "#fde8d2"],
-                [0.55, "#fff5c7"],
-                [0.75, "#d9f2d8"],
-                [1.0, "#72d69b"],
-            ],
-            colorbar={"title": "Retorno<br>total", "ticksuffix": "%"},
-            hovertemplate=(
-                "Saída: %{customdata[0]}<br>Taxa: %{customdata[1]}"
-                "<br>Retorno total: %{text}"
-                "<extra></extra>"
-            ),
-            customdata=[
-                [
-                    [data_saida.strftime("%d/%m/%Y"), rotulo_taxa_cenario]
-                    for data_saida in datas_heatmap
-                ]
-                for rotulo_taxa_cenario in rotulos_taxas_heatmap
-            ],
-        )
-    )
-    linha_carrego = choques_heatmap_bps.index(0)
-    fig_heatmap.add_shape(
-        type="rect",
-        x0=-0.5,
-        x1=len(datas_heatmap) - 0.5,
-        y0=linha_carrego - 0.5,
-        y1=linha_carrego + 0.5,
-        line={"color": "#e2a126", "width": 3},
-        fillcolor="rgba(0,0,0,0)",
-    )
-    fig_heatmap.update_layout(
-        height=max(500, 205 + 31 * len(choques_heatmap_bps)),
-        margin={"l": 25, "r": 25, "t": 55, "b": 45},
-        xaxis={
-            "title": "Data de saída",
-            "tickmode": "array",
-            "tickvals": posicoes_x_heatmap,
-            "ticktext": rotulos_datas_heatmap,
-            "side": "top",
-            "fixedrange": True,
-        },
-        yaxis={
-            "title": f"{rotulo_taxa} no cenário",
-            "tickmode": "array",
-            "tickvals": posicoes_y_heatmap,
-            "ticktext": rotulos_taxas_heatmap,
-            "autorange": "reversed",
-            "fixedrange": True,
-        },
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        dragmode=False,
-    )
-    st.plotly_chart(
-        fig_heatmap,
-        width="stretch",
-        config={"displayModeBar": False, "displaylogo": False},
-    )
-    st.caption(
-        "Retorno bruto acumulado desde a compra, com cupons somados sem "
-        "reinvestimento. Para IPCA+, os fluxos são corrigidos pela inflação projetada."
-    )
+        dados_mapa = {
+            "columns": [rotulo.replace("<br>", " - ") for rotulo in rotulos_datas_heatmap],
+            "rowLabels": rotulos_taxas_heatmap,
+            "values": valores_heatmap,
+            "texts": textos_heatmap,
+            "currentRow": linha_carrego,
+            "colorScores": intensidade_heatmap,
+            "differences": diferencas_heatmap,
+        }
 
     cenarios = []
     for choque_bps in range(-300, 301, 25):
@@ -3953,118 +4044,126 @@ def pagina_renda_fixa():
             }
         )
     tabela_cenarios = pd.DataFrame(cenarios)
-    st.markdown("### Sensibilidade por vencimento")
-    anos_disponiveis = sorted(
-        {
-            *range(max(2030, pd.Timestamp(data_compra).year + 1), 2076, 5),
-            pd.Timestamp(data_vencimento).year,
-        }
-    )
-    anos_padrao = sorted(
-        {
-            ano
-            for ano in [
-                pd.Timestamp(data_vencimento).year,
-                2035,
-                2045,
-                2055,
-                2065,
-            ]
-            if ano in anos_disponiveis
-        }
-    )
-    anos_sensibilidade = st.multiselect(
-        "Vencimentos comparados no gráfico",
-        anos_disponiveis,
-        default=anos_padrao,
-        key="rf_anos_sensibilidade",
-    )
-    if not anos_sensibilidade:
-        anos_sensibilidade = [pd.Timestamp(data_vencimento).year]
-
-    cores_sensibilidade = [
-        "#119bb5",
-        "#e62b55",
-        "#7c3aed",
-        "#0f9d78",
-        "#e2a126",
-        "#1769e0",
-    ]
+    secoes_pdf["sensitivity"] = secao_renda_fixa("Sensibilidade por vencimento", "sensitivity")
     fig_assimetria = go.Figure()
-    for indice, ano_vencimento in enumerate(sorted(anos_sensibilidade, reverse=True)):
-        if ano_vencimento == pd.Timestamp(data_vencimento).year:
-            vencimento_cenario = pd.Timestamp(data_vencimento)
-            rotulo_vencimento = f"Selecionado · {ano_vencimento}"
-        else:
-            vencimento_cenario = pd.Timestamp(data_vencimento) + pd.DateOffset(
-                years=ano_vencimento - pd.Timestamp(data_vencimento).year
-            )
-            rotulo_vencimento = f"Vencimento {ano_vencimento}"
-        if vencimento_cenario <= pd.Timestamp(data_compra):
-            continue
-        fluxos_cenario = gerar_fluxos_titulo(
-            data_compra,
-            vencimento_cenario,
-            valor_nominal,
-            taxa_cupom,
-            frequencia_meses,
+    if secoes_pdf["sensitivity"]:
+        anos_disponiveis = sorted(
+            {
+                *range(max(2030, pd.Timestamp(data_compra).year + 1), 2076, 5),
+                pd.Timestamp(data_vencimento).year,
+            }
         )
-        preco_referencia = precificar_fluxos_titulo(
-            fluxos_cenario, data_compra, taxa_compra
+        anos_padrao = sorted(
+            {
+                ano
+                for ano in [
+                    pd.Timestamp(data_vencimento).year,
+                    2035,
+                    2045,
+                    2055,
+                    2065,
+                ]
+                if ano in anos_disponiveis
+            }
         )
-        variacoes = []
-        for taxa_cenario in tabela_cenarios["taxa"]:
-            preco_cenario = precificar_fluxos_titulo(
-                fluxos_cenario, data_compra, float(taxa_cenario)
-            )
-            variacoes.append(preco_cenario / preco_referencia - 1)
-        fig_assimetria.add_trace(
-            go.Scatter(
-                x=tabela_cenarios["taxa"] * 100,
-                y=pd.Series(variacoes) * 100,
-                mode="lines+markers",
-                name=rotulo_vencimento,
-                line={
-                    "color": cores_sensibilidade[indice % len(cores_sensibilidade)],
-                    "width": 2.8,
-                },
-                marker={"size": 5},
-                hovertemplate=(
-                    f"{rotulo_vencimento}<br>Taxa: %{{x:.2f}}% a.a."
-                    "<br>Variação do preço: %{y:.2f}%<extra></extra>"
-                ),
-            )
+        if "rf_anos_sensibilidade" in st.session_state:
+            st.session_state["rf_anos_sensibilidade"] = [
+                ano for ano in st.session_state["rf_anos_sensibilidade"]
+                if ano in anos_disponiveis
+            ]
+        anos_sensibilidade = st.multiselect(
+            "Vencimentos comparados no gráfico",
+            anos_disponiveis,
+            default=anos_padrao,
+            key="rf_anos_sensibilidade",
         )
-    fig_assimetria.add_hline(y=0, line_color="#64748b", line_width=1.2)
-    fig_assimetria.add_vline(
-        x=taxa_compra_pct,
-        line_color="#e2a126",
-        line_dash="dash",
-        annotation_text=f"Taxa atual · {taxa_compra_pct:.2f}%",
-    )
-    fig_assimetria.update_layout(
-        title="Análise de sensibilidade por prazo",
-        height=540,
-        margin={"l": 25, "r": 25, "t": 75, "b": 55},
-        xaxis_title=f"{rotulo_taxa} de mercado (% a.a.)",
-        yaxis_title="Variação do preço (%)",
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        dragmode=False,
-        legend={"orientation": "v", "x": 1.01, "y": 1, "xanchor": "left"},
-    )
-    fig_assimetria.update_xaxes(gridcolor="#e2e8f0", fixedrange=True)
-    fig_assimetria.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0", fixedrange=True)
-    st.plotly_chart(
-        fig_assimetria,
-        width="stretch",
-        config={"displayModeBar": False, "displaylogo": False},
-    )
-    st.caption(
-        "O gráfico recalcula o preço hoje para diferentes taxas, mantendo a mesma "
-        "estrutura de cupom. Quanto mais distante o vencimento, maior tende a ser a "
-        "duration e a sensibilidade. A curvatura representa a convexidade."
-    )
+        if not anos_sensibilidade:
+            anos_sensibilidade = [pd.Timestamp(data_vencimento).year]
+
+        cores_sensibilidade = [
+            "#119bb5",
+            "#e62b55",
+            "#7c3aed",
+            "#0f9d78",
+            "#e2a126",
+            "#1769e0",
+        ]
+        fig_assimetria = go.Figure()
+        for indice, ano_vencimento in enumerate(sorted(anos_sensibilidade, reverse=True)):
+            if ano_vencimento == pd.Timestamp(data_vencimento).year:
+                vencimento_cenario = pd.Timestamp(data_vencimento)
+                rotulo_vencimento = f"Selecionado · {ano_vencimento}"
+            else:
+                vencimento_cenario = pd.Timestamp(data_vencimento) + pd.DateOffset(
+                    years=ano_vencimento - pd.Timestamp(data_vencimento).year
+                )
+                rotulo_vencimento = f"Vencimento {ano_vencimento}"
+            if vencimento_cenario <= pd.Timestamp(data_compra):
+                continue
+            fluxos_cenario = gerar_fluxos_titulo(
+                data_compra,
+                vencimento_cenario,
+                valor_nominal,
+                taxa_cupom,
+                frequencia_meses,
+            )
+            preco_referencia = precificar_fluxos_titulo(
+                fluxos_cenario, data_compra, taxa_compra
+            )
+            variacoes = []
+            for taxa_cenario in tabela_cenarios["taxa"]:
+                preco_cenario = precificar_fluxos_titulo(
+                    fluxos_cenario, data_compra, float(taxa_cenario)
+                )
+                variacoes.append(preco_cenario / preco_referencia - 1)
+            fig_assimetria.add_trace(
+                go.Scatter(
+                    x=tabela_cenarios["taxa"] * 100,
+                    y=pd.Series(variacoes) * 100,
+                    mode="lines+markers",
+                    name=rotulo_vencimento,
+                    line={
+                        "color": cores_sensibilidade[indice % len(cores_sensibilidade)],
+                        "width": 2.8,
+                    },
+                    marker={"size": 5},
+                    hovertemplate=(
+                        f"{rotulo_vencimento}<br>Taxa: %{{x:.2f}}% a.a."
+                        "<br>Variação do preço: %{y:.2f}%<extra></extra>"
+                    ),
+                )
+            )
+        fig_assimetria.add_hline(y=0, line_color="#64748b", line_width=1.2)
+        fig_assimetria.add_vline(
+            x=taxa_compra_pct,
+            line_color="#e2a126",
+            line_dash="dash",
+            annotation_text=f"Taxa atual · {taxa_compra_pct:.2f}%",
+        )
+        fig_assimetria.update_layout(
+            title="Análise de sensibilidade por prazo",
+            height=540,
+            margin={"l": 25, "r": 25, "t": 75, "b": 55},
+            xaxis_title=f"{rotulo_taxa} de mercado (% a.a.)",
+            yaxis_title="Variação do preço (%)",
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            dragmode=False,
+            legend={"orientation": "v", "x": 1.01, "y": 1, "xanchor": "left"},
+        )
+        fig_assimetria.update_xaxes(gridcolor="#e2e8f0", fixedrange=True)
+        fig_assimetria.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0", fixedrange=True)
+        st.plotly_chart(
+            fig_assimetria,
+            width="stretch",
+            config={"displayModeBar": False, "displaylogo": False},
+        )
+        st.caption(
+            "O gráfico recalcula o preço hoje para diferentes taxas, mantendo a mesma "
+            "estrutura de cupom. Quanto mais distante o vencimento, maior tende a ser a "
+            "duration e a sensibilidade. A curvatura representa a convexidade."
+        )
+
 
     choques_tabela = {-200, -100, -50, 0, 50, 100, 200}
     tabela_resumo = tabela_cenarios[
@@ -4077,20 +4176,22 @@ def pagina_renda_fixa():
     tabela_resumo["Impacto da taxa"] = tabela_resumo["impacto_preco"]
     tabela_resumo["Retorno total"] = tabela_resumo["retorno_total"]
     tabela_resumo["Valor estimado"] = tabela_resumo["valor_saida"]
-    st.markdown("#### Cenários de taxa")
-    st.dataframe(
-        tabela_resumo[
-            ["Cenário", "Taxa na saída", "Impacto da taxa", "Retorno total", "Valor estimado"]
-        ],
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "Taxa na saída": st.column_config.NumberColumn(format="percent"),
-            "Impacto da taxa": st.column_config.NumberColumn(format="percent"),
-            "Retorno total": st.column_config.NumberColumn(format="percent"),
-            "Valor estimado": st.column_config.NumberColumn(format="R$ %.2f"),
-        },
-    )
+    secoes_pdf["scenarios"] = secao_renda_fixa("Cenários de taxa", "scenarios")
+    if secoes_pdf["scenarios"]:
+        st.dataframe(
+            tabela_resumo[
+                ["Cenário", "Taxa na saída", "Impacto da taxa", "Retorno total", "Valor estimado"]
+            ],
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Taxa na saída": st.column_config.NumberColumn(format="percent"),
+                "Impacto da taxa": st.column_config.NumberColumn(format="percent"),
+                "Retorno total": st.column_config.NumberColumn(format="percent"),
+                "Valor estimado": st.column_config.NumberColumn(format="R$ %.2f"),
+            },
+        )
+
 
     tabela_fluxos = []
     for fluxo in fluxos:
@@ -4106,7 +4207,8 @@ def pagina_renda_fixa():
                 "Principal estimado": fluxo["principal"] * fator_fluxo * unidades,
             }
         )
-    with st.expander("Fluxo de pagamentos", expanded=False):
+    secoes_pdf["cashflows"] = secao_renda_fixa("Fluxo de pagamentos", "cashflows", aberta=False)
+    if secoes_pdf["cashflows"]:
         st.dataframe(
             pd.DataFrame(tabela_fluxos),
             hide_index=True,
@@ -4118,19 +4220,15 @@ def pagina_renda_fixa():
             },
         )
 
-    if emissor == "Título privado":
-        st.warning(
-            "Em títulos privados, a taxa informada deve representar a taxa total exigida "
-            "pelo mercado. A simulação não estima inadimplência, spread de crédito, "
-            "liquidez, resgate antecipado ou cláusulas específicas."
-        )
-
     st.markdown("### Relatório para o cliente")
     st.caption(
-        "Baixe as premissas, os resultados, a sensibilidade e os fluxos da simulação."
+        "Premissas e comparação a mercado/na curva sempre incluídas. "
+        "As análises recolhidas acima não serão exportadas."
     )
     dados_pdf_renda_fixa = {
         "reportType": "renda_fixa",
+        "reportVersion": "renda-fixa-v2-comparacao-curva",
+        "sections": secoes_pdf,
         "generatedAt": date.today().strftime("%d/%m/%Y"),
         "title": "Simulação de renda fixa",
         "subtitle": f"{emissor} | {indexador}",
@@ -4143,17 +4241,24 @@ def pagina_renda_fixa():
             ["Taxa na saída", f"{taxa_saida_pct:.2f}% a.a."],
             ["Cupom", f"{taxa_cupom_pct:.2f}% a.a."],
             ["IPCA projetado", f"{ipca_pct:.2f}% a.a."],
+            ["Pagamento de juros", estrutura],
         ],
         "summary": [
-            ["Preço teórico na compra", formatar_reais(preco_compra_unitario)],
-            ["Valor estimado na saída", formatar_reais(valor_saida)],
-            ["Retorno total", f"{retorno_total:.2%}"],
-            ["Retorno anualizado", f"{retorno_anualizado:.2%}"],
-            ["Duration modificada", f"{duration_modificada:.2f} anos"],
-            ["DV01 da posição", formatar_reais(dv01_total)],
-            ["Retorno de carrego", f"{retorno_carrego:.2%}"],
-            ["Efeito da taxa", formatar_reais(efeito_taxa)],
+            ["Retorno total a mercado", pct_rf(retorno_total)],
+            ["Anualizado a mercado", pct_rf(retorno_anualizado)],
+            ["Retorno total na curva", pct_rf(retorno_carrego)],
+            ["Anualizado na curva", pct_rf(retorno_carrego_anualizado)],
         ],
+        "wealth": [
+            ["Patrimônio a mercado", formatar_reais(valor_saida)],
+            ["Patrimônio na curva", formatar_reais(valor_carrego)],
+            ["Cupons/principal recebidos (incluídos)", formatar_reais(fluxos_recebidos_unitario * unidades)],
+        ],
+        "attribution": (
+            f"{pct_rf(retorno_carrego)} na curva + ({efeito_texto}) de efeito da taxa "
+            f"= {pct_rf(retorno_total)} a mercado. Diferença: {formatar_reais(efeito_taxa)}."
+        ),
+        "risk": detalhes_risco if secoes_pdf["risk"] else [],
         "sensitivity": {
             "series": [
                 {
@@ -4164,16 +4269,7 @@ def pagina_renda_fixa():
                 for trace in fig_assimetria.data
             ]
         },
-        "heatmap": {
-            "columns": [rotulo.replace("<br>", " - ") for rotulo in rotulos_datas_heatmap],
-            "rowLabels": rotulos_taxas_heatmap,
-            "values": [
-                [float(valor) for valor in linha]
-                for linha in valores_heatmap
-            ],
-            "texts": textos_heatmap,
-            "currentRow": linha_carrego,
-        },
+        "heatmap": dados_mapa,
         "scenarios": {
             "columns": ["Cenário", "Taxa na saída", "Impacto da taxa", "Retorno total", "Valor estimado"],
             "rows": [
@@ -4199,6 +4295,9 @@ def pagina_renda_fixa():
             ],
         },
     }
+    for codigo in ("heatmap", "sensitivity", "scenarios", "cashflows"):
+        if not secoes_pdf[codigo]:
+            dados_pdf_renda_fixa.pop(codigo, None)
     dados_json_renda_fixa = json.dumps(
         dados_pdf_renda_fixa, ensure_ascii=False, sort_keys=True, allow_nan=False
     )

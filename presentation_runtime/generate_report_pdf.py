@@ -3,6 +3,9 @@ import math
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from renda_fixa_visual import comparar_com_carrego, cor_carrego
+
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4, landscape
@@ -197,11 +200,14 @@ def draw_metric_cards(items, top, columns=4):
     return top - rows * (card_height + gap)
 
 
-def draw_heatmap_table(heatmap, top, start_column=0, end_column=None):
+def draw_heatmap_table(heatmap, top, start_column=0, end_column=None,
+                       start_row=0, end_row=None):
     columns = heatmap.get("columns", [])
     row_labels = heatmap.get("rowLabels", [])
     values = heatmap.get("values", [])
     texts = heatmap.get("texts", [])
+    if end_row is None:
+        end_row = len(row_labels)
     if end_column is None:
         end_column = len(columns)
     selected_columns = columns[start_column:end_column]
@@ -209,7 +215,8 @@ def draw_heatmap_table(heatmap, top, start_column=0, end_column=None):
         return top
 
     rows = [["Taxa no cenário", *selected_columns]]
-    for row_index, label in enumerate(row_labels):
+    for row_index in range(start_row, end_row):
+        label = row_labels[row_index]
         row_texts = texts[row_index][start_column:end_column]
         rows.append([label, *row_texts])
 
@@ -221,7 +228,7 @@ def draw_heatmap_table(heatmap, top, start_column=0, end_column=None):
             paragraph_cell(
                 value,
                 6.2 if row_index else 6.5,
-                bold=row_index == 0 or (row_index - 1) == heatmap.get("currentRow"),
+                bold=row_index == 0 or (row_index - 1 + start_row) == heatmap.get("currentRow"),
                 color=WHITE if row_index == 0 else INK,
             )
             for value in row
@@ -242,28 +249,20 @@ def draw_heatmap_table(heatmap, top, start_column=0, end_column=None):
         ("BACKGROUND", (0, 0), (-1, 0), NAVY),
         ("BACKGROUND", (0, 1), (0, -1), LIGHT),
     ]
-    flat_values = [
-        float(value)
-        for row in values
-        for value in row
-    ]
-    minimum = min(flat_values) if flat_values else 0
-    maximum = max(flat_values) if flat_values else 1
-    amplitude = maximum - minimum or 1
-    palette = ["#F7B7BD", "#FDE8D2", "#FFF5C7", "#D9F2D8", "#72D69B"]
-    for row_index, row_values in enumerate(values, start=1):
+    scores = heatmap.get("colorScores")
+    if scores is None:
+        _, scores = comparar_com_carrego(values, heatmap.get("currentRow", 0))
+    for row_index, row_values in enumerate(scores[start_row:end_row], start=1):
         for column_index, value in enumerate(
             row_values[start_column:end_column], start=1
         ):
-            ratio = (float(value) - minimum) / amplitude
-            palette_index = min(len(palette) - 1, int(ratio * len(palette)))
             commands.append(
                 ("BACKGROUND", (column_index, row_index), (column_index, row_index),
-                 colors.HexColor(palette[palette_index]))
+                 colors.HexColor(cor_carrego(float(value))))
             )
     current_row = heatmap.get("currentRow")
-    if isinstance(current_row, int) and 0 <= current_row < len(row_labels):
-        table_row = current_row + 1
+    if isinstance(current_row, int) and start_row <= current_row < end_row:
+        table_row = current_row - start_row + 1
         commands.extend([
             ("LINEABOVE", (0, table_row), (-1, table_row), 1.8, GOLD),
             ("LINEBELOW", (0, table_row), (-1, table_row), 1.8, GOLD),
@@ -550,60 +549,92 @@ def render_indices():
 
 
 def render_fixed_income():
+    sections = data.get("sections", {})
     cover(data.get("title", "Simulação de renda fixa"), data.get("subtitle", ""))
-    page_header("Premissas e resultado", data.get("subtitle", ""))
+    page_header("A mercado e na curva", data.get("subtitle", ""))
+    cards = [(label, value) for label, value in data.get("summary", [])]
+    bottom = draw_metric_cards(cards, H - 108, 4)
+    if data.get("attribution"):
+        height = wrapped(data["attribution"], MARGIN, bottom - 5,
+                         W - 2 * MARGIN, 9, True, NAVY)
+        bottom -= height + 18
+    if data.get("wealth"):
+        bottom = draw_table([["Patrimônio e pagamentos", "Valor"]] + data["wealth"],
+                            MARGIN, bottom, W - 2 * MARGIN, [440, 325], 8)
+        bottom -= 14
     parameters = data.get("parameters", [])
-    summary = data.get("summary", [])
-    cards = [(label, value) for label, value in summary]
-    bottom = draw_metric_cards(cards, H - 115, 4)
-    text("Premissas da simulação", MARGIN, bottom - 8, 10, True, NAVY)
-    param_rows = [["Parâmetro", "Valor"]] + parameters
-    draw_table(param_rows, MARGIN, bottom - 20, W - 2 * MARGIN, [300, 465], 8)
+    param_rows = [["Premissa", "Valor", "Premissa", "Valor"]]
+    for i in range(0, len(parameters), 2):
+        pair = parameters[i:i + 2]
+        param_rows.append(pair[0] + (pair[1] if len(pair) == 2 else ["", ""]))
+    draw_table(param_rows, MARGIN, bottom - 5, W - 2 * MARGIN,
+               [125, 257, 125, 258], 7.5)
+    text("Cupons recebidos sem reinvestimento. Anualizado: taxa equivalente do retorno total.",
+         MARGIN, 45, 8, color=MUTED)
     finish_page()
 
-    page_header("Sensibilidade à taxa de mercado", "Variação estimada do preço por vencimento.")
-    sensitivity = data.get("sensitivity", {})
-    chart = {
-        "categories": [],
-        "series": [
-            {"name": item.get("name", ""), "values": item.get("y", [])}
-            for item in sensitivity.get("series", [])
-        ],
-    }
-    first_series = sensitivity.get("series", [])[:1]
-    if first_series:
-        chart["categories"] = [f"{value:.1f}%" for value in first_series[0].get("x", [])]
-    draw_line_chart(chart, 72, 125, W - 115, H - 245, percentage_points=True)
-    finish_page()
+    if sections.get("risk", True) and data.get("risk"):
+        page_header("Detalhes do título e risco")
+        draw_table([["Indicador", "Valor"]] + data["risk"],
+                   MARGIN, H - 115, W - 2 * MARGIN, [400, 365], 9)
+        finish_page()
 
-    heatmap = data.get("heatmap", {})
+    heatmap = data.get("heatmap", {}) if sections.get("heatmap", True) else {}
     heatmap_columns = heatmap.get("columns", [])
+    heatmap_rows = heatmap.get("rowLabels", [])
+    part = 0
     for start_column in range(0, len(heatmap_columns), 8):
-        end_column = min(start_column + 8, len(heatmap_columns))
-        continuation = "" if start_column == 0 else " - continuação"
-        page_header(
-            "Mapa de calor de retorno" + continuation,
-            "Retorno acumulado por data de saída e taxa de mercado. A linha dourada representa o carrego na curva.",
-        )
-        draw_heatmap_table(heatmap, H - 115, start_column, end_column)
+        for start_row in range(0, len(heatmap_rows), 18):
+            part += 1
+            end_column = min(start_column + 8, len(heatmap_columns))
+            end_row = min(start_row + 18, len(heatmap_rows))
+            page_header(
+                "Mapa de calor de retorno" + (f" - parte {part}" if part > 1 else ""),
+                "Valores: retorno total. Cores: verde acima da curva, neutro na curva, vermelho abaixo.",
+            )
+            draw_heatmap_table(heatmap, H - 115, start_column, end_column, start_row, end_row)
+            text("Comparação com o carrego de cada prazo; intensidade relativa a cada coluna. Linha dourada: taxa de compra.",
+                 MARGIN, 45, 7.5, color=MUTED)
+            finish_page()
+
+    if sections.get("sensitivity", True) and data.get("sensitivity"):
+        page_header("Sensibilidade à taxa de mercado", "Variação estimada do preço por vencimento.")
+        sensitivity = data["sensitivity"]
+        chart = {
+            "categories": [],
+            "series": [
+                {"name": item.get("name", ""), "values": item.get("y", [])}
+                for item in sensitivity.get("series", [])
+            ],
+        }
+        first_series = sensitivity.get("series", [])[:1]
+        if first_series:
+            chart["categories"] = [f"{value:.1f}%" for value in first_series[0].get("x", [])]
+        draw_line_chart(chart, 72, 125, W - 115, H - 245, percentage_points=True)
         finish_page()
 
-    page_header("Cenários de taxa")
-    scenarios = data.get("scenarios", {})
-    scenario_rows = [scenarios.get("columns", [])] + scenarios.get("rows", [])
-    draw_table(scenario_rows, MARGIN, H - 110, W - 2 * MARGIN, [120, 120, 140, 140, 245], 7.5)
-    finish_page()
-
-    cashflows = data.get("cashflows", {})
-    cashflow_rows = cashflows.get("rows", [])
-    chunks = [cashflow_rows[index:index + 18] for index in range(0, len(cashflow_rows), 18)] or [[]]
-    for index, chunk in enumerate(chunks):
-        page_header("Fluxo de pagamentos" + (f" - continuação {index + 1}" if index else ""))
-        rows = [cashflows.get("columns", [])] + chunk
-        draw_table(rows, MARGIN, H - 110, W - 2 * MARGIN, [220, 270, 275], 7.5)
+    if sections.get("scenarios", True) and data.get("scenarios"):
+        page_header("Cenários de taxa")
+        scenarios = data["scenarios"]
+        scenario_rows = [scenarios.get("columns", [])] + scenarios.get("rows", [])
+        draw_table(scenario_rows, MARGIN, H - 110, W - 2 * MARGIN,
+                   [120, 120, 140, 140, 245], 7.5)
         finish_page()
-    methodology_page("A simulação usa as premissas informadas pelo usuário e não estima inadimplência, spread de crédito ou liquidez.")
 
+    if sections.get("cashflows", True) and data.get("cashflows"):
+        cashflows = data["cashflows"]
+        cashflow_rows = cashflows.get("rows", [])
+        chunks = [cashflow_rows[index:index + 18] for index in range(0, len(cashflow_rows), 18)]
+        for index, chunk in enumerate(chunks):
+            page_header("Fluxo de pagamentos" + (f" - continuação {index + 1}" if index else ""))
+            rows = [cashflows.get("columns", [])] + chunk
+            draw_table(rows, MARGIN, H - 110, W - 2 * MARGIN, [220, 270, 275], 7.5)
+            finish_page()
+    methodology_page(
+        "Títulos públicos: precificação teórica por fluxos e capitalização anual, "
+        "com dias corridos/365,25. IPCA+ inclui a inflação projetada. "
+        "Cupons são somados sem reinvestimento. Os valores não são o PU oficial do Tesouro."
+    )
 
 report_type = data.get("reportType", "indices")
 if report_type == "fundos":
