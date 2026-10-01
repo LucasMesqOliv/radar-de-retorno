@@ -1,6 +1,7 @@
 import json
 import math
 import sys
+from html import escape
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -39,7 +40,7 @@ LIGHT = colors.HexColor("#F1F3F6")
 LIGHT_BLUE = colors.HexColor("#EAF3FC")
 GRID = colors.HexColor("#D7DEE7")
 WHITE = colors.white
-SERIES_COLORS = [BRIGHT_BLUE, CYAN, GOLD, PURPLE, GREEN, RED]
+SERIES_COLORS = [BRIGHT_BLUE, CYAN, GOLD, PURPLE, GREEN, RED, MUTED]
 
 c = canvas.Canvas(str(output_path), pagesize=PAGE)
 c.setTitle("Radar de Retorno")
@@ -66,7 +67,7 @@ def wrapped(value, x, y, width, size=9, bold=False, color=INK, leading=None):
         alignment=TA_LEFT,
         splitLongWords=True,
     )
-    paragraph = Paragraph(str(value), style)
+    paragraph = Paragraph(escape(str(value)), style)
     _, height = paragraph.wrap(width, H)
     paragraph.drawOn(c, x, y - height)
     return height
@@ -133,7 +134,7 @@ def number(value, digits=2):
 
 def paragraph_cell(value, size=7.5, bold=False, color=INK):
     return Paragraph(
-        str(value),
+        escape(str(value)),
         ParagraphStyle(
             "cell",
             fontName="Helvetica-Bold" if bold else "Helvetica",
@@ -523,26 +524,47 @@ def render_funds():
 
 
 def render_indices():
-    cover("Análise de índices", data.get("summarySubtitle", ""))
     page_header(data.get("summaryTitle", "Visão histórica"), data.get("summarySubtitle", ""))
     cards = [(item.get("label", ""), item.get("value", "")) for item in data.get("comparisons", [])]
+    cards_bottom = H - 112
     if cards:
-        draw_metric_cards(cards, H - 120, min(3, len(cards)))
-    stats = [["Referência", data.get("periodLabel", "Período"), "Equiv. anual", "Pior", "Mediana", "Melhor"]]
+        cards_bottom = draw_metric_cards(cards, H - 112, min(3, len(cards)))
+    text("Retorno anualizado nas janelas móveis", MARGIN, cards_bottom - 15, 10, True, NAVY)
+    chart_top = cards_bottom - 39
+    chart_bottom = 135
+    draw_line_chart(
+        data.get("chart", {}), 72, chart_bottom, W - 115,
+        max(100, chart_top - chart_bottom), True,
+    )
+    text(
+        "Cada ponto representa uma janela encerrada naquele mês; os cards mostram a frequência de vitória.",
+        MARGIN, 43, 7.5, color=MUTED,
+    )
+    finish_page()
+
+    page_header("Retorno no período selecionado", data.get("periodLabel", ""))
+    stats = [["Referência", data.get("periodLabel", "Período"), "Equiv. anual", "Pior janela", "Mediana", "Melhor janela"]]
     for row in data.get("statistics", []):
         stats.append([
             row.get("name", ""), row.get("periodReturn", ""), row.get("periodAnnual", ""),
             row.get("worst", ""), row.get("median", ""), row.get("best", ""),
         ])
-    draw_table(stats, MARGIN, 260, W - 2 * MARGIN, [260, 100, 95, 95, 95, 95], 7)
-    finish_page()
-
-    page_header(data.get("chartTitle", "Janelas móveis"))
-    draw_line_chart(data.get("chart", {}), 72, 125, W - 115, H - 245, True)
-    finish_page()
-
-    page_header(f"Desempenho no período - {data.get('periodLabel', '')}")
-    draw_line_chart(data.get("periodChart", {}), 72, 125, W - 115, H - 245, False)
+    table_bottom = draw_table(
+        stats, MARGIN, H - 115, W - 2 * MARGIN,
+        [253, 110, 100, 105, 100, 105], 7,
+    )
+    text(
+        "Pior, mediana e melhor: retornos anualizados das janelas móveis, não do período selecionado.",
+        MARGIN, table_bottom - 14, 7.5, color=MUTED,
+    )
+    text("Evolução no período selecionado", MARGIN, table_bottom - 38, 10, True, NAVY)
+    period_chart_top = table_bottom - 60
+    period_chart_bottom = 123
+    draw_line_chart(
+        data.get("periodChart", {}), 72, period_chart_bottom, W - 115,
+        max(95, period_chart_top - period_chart_bottom), False,
+    )
+    text("Índice base 100 no início do período; retornos brutos.", MARGIN, 43, 7.5, color=MUTED)
     finish_page()
 
     methodology_page("Fontes: Banco Central do Brasil e Yahoo Finance (^GSPC e BRL=X).")

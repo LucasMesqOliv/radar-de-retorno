@@ -5092,7 +5092,7 @@ def montar_dados_apresentacao(
 
     return {
         "reportType": "indices",
-        "reportVersion": "indices-v4-alavancagens-independentes-sp500-brl",
+        "reportVersion": "indices-v5-pdf-janelas-primeira-pagina",
         "generatedAt": f"{meses[hoje.month - 1].capitalize()} de {hoje.year}",
         "summaryTitle": f"{nomes[serie_principal]} em perspectiva histórica",
         "summarySubtitle": (
