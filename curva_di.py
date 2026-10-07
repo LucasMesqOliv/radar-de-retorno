@@ -10,6 +10,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from historico_di import carregar_historico
 
 BASE = 'https://sistemaswebb3-derivativos.b3.com.br/referenceRatesProxy/Search/'
 FONTE = 'https://sistemaswebb3-derivativos.b3.com.br/referenceRatesPage/all?language=pt-br'
@@ -63,7 +64,9 @@ def interpolar(df, prazo):
 def pagina_curva_di():
     st.title('Curva de juros DI')
     st.write('Compare a curva DI × Pré em diferentes datas e acompanhe a abertura ou o fechamento dos juros por prazo.')
-    st.caption('Taxas anuais em % • base de 252 dias úteis • curva referencial da B3 derivada dos futuros DI, sem cotações intradiárias.')
+    fonte = st.radio('Fonte da curva', ['Futuros DI1 — histórico desde 2018', 'Curva referencial DI × Pré — B3 recente'])
+    usar_historico = fonte.startswith('Futuros')
+    st.caption('Taxas de ajuste anuais em % • base de 252 dias úteis • dados de fechamento, sem cotações intradiárias.')
     hoje = datetime.now(timezone(timedelta(hours=-3))).date()
     pasta = Path(__file__).parent / 'data' / 'curvas_di'
     curvas = {}
@@ -98,16 +101,29 @@ def pagina_curva_di():
                 st.success(f'{len(novos)} curvas importadas.')
             except (ValueError, OSError) as erro:
                 st.error(str(erro))
-    try:
-        disponiveis = [d for d in datas_b3() if d <= hoje]
-    except (requests.RequestException, ValueError) as erro:
-        disponiveis = []
-        st.warning('B3 indisponível no momento. As curvas salvas continuam acessíveis.')
+    if usar_historico:
+        try:
+            with st.spinner('Carregando histórico dos contratos DI1…'):
+                historico, aviso = carregar_historico()
+            if aviso:
+                st.warning(aviso)
+            curvas = {dia.date(): grupo[['dias_uteis', 'taxa']].sort_values('dias_uteis') for dia, grupo in historico.groupby('data') if dia.date() <= hoje}
+            disponiveis = sorted(curvas)
+            st.caption(f'Histórico DI1: {disponiveis[0]:%d/%m/%Y} a {disponiveis[-1]:%d/%m/%Y}. Dados B3 arquivados pelo projeto PYield.')
+        except (OSError, ValueError) as erro:
+            st.error(f'Não foi possível carregar o histórico DI1: {erro}')
+            return
+    else:
+        try:
+            disponiveis = [d for d in datas_b3() if d <= hoje]
+        except (requests.RequestException, ValueError):
+            disponiveis = []
+            st.warning('B3 indisponível no momento. As curvas salvas continuam acessíveis.')
     datas = sorted(set(disponiveis) | set(curvas))
     if not datas:
         st.info('Nenhuma curva disponível. Tente novamente ou importe o histórico.')
         return
-    referencia = st.date_input('Data de referência', value=datas[-1], max_value=hoje)
+    referencia = st.date_input('Data de referência', value=datas[-1], min_value=datas[0], max_value=hoje, key=f'referencia_di_{usar_historico}')
     periodos = st.multiselect('Comparar com', [1, 3, 6, 12, 24], default=[1, 6, 12], format_func=lambda m: f'{m} meses atrás')
     personalizadas = st.multiselect('Adicionar datas disponíveis', datas, format_func=lambda d: d.strftime('%d/%m/%Y'))
     pedidos = [('Referência', referencia)] + [(f'{m}m atrás', (pd.Timestamp(referencia) - pd.DateOffset(months=m)).date()) for m in periodos] + [('Personalizada', d) for d in personalizadas]
@@ -156,4 +172,7 @@ def pagina_curva_di():
         st.plotly_chart(go.Figure([go.Bar(x=variacoes.index, y=variacoes[c], name=c) for c in variacoes]).update_layout(template='plotly_white', barmode='group', yaxis_title='Pontos-base'), use_container_width=True)
     exportacao = pd.concat([df.assign(data=dia.isoformat()) for dia, df in selecionadas.items()], ignore_index=True)
     st.download_button('Baixar curvas em CSV', exportacao[['data', 'dias_uteis', 'taxa']].to_csv(sep=';', index=False).encode('utf-8-sig'), 'curvas_di.csv', 'text/csv')
-    st.markdown(f'[Fonte: taxas referenciais B3]({FONTE})')
+    if usar_historico:
+        st.markdown('[Fonte: ajustes DI1 da B3, arquivo público PYield](https://github.com/crdcj/pyield-data)')
+    else:
+        st.markdown(f'[Fonte: taxas referenciais B3]({FONTE})')
