@@ -21,6 +21,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 from renda_fixa_visual import ESCALA_CARREGO, comparar_com_carrego
+from curva_di import pagina_curva_di
 
 from radar_database import (
     cadastro_fundos_atualizado_recentemente,
@@ -4342,7 +4343,7 @@ with st.sidebar:
     )
     pagina_atual = st.radio(
         "Navegação",
-        ["Início", "Análise de índices", "Fundos", "Renda fixa"],
+        ["Início", "Análise de índices", "Fundos", "Renda fixa", "Curva DI"],
         key="pagina_radar",
     )
 
@@ -4352,6 +4353,11 @@ if pagina_atual == "Início":
 
 if pagina_atual == "Fundos":
     pagina_fundos()
+    st.stop()
+
+if pagina_atual == "Curva DI":
+    pagina_curva_di()
+    rodape_radar()
     st.stop()
 
 if pagina_atual == "Renda fixa":
