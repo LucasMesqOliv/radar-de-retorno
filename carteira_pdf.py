@@ -47,7 +47,10 @@ X_FIM = W - M
 LARGURA_PRODUTO = 560 - (X_PRODUTO + 10)
 LARGURA_LIQUIDEZ = X_FIM - X_LIQUIDEZ - 10
 LIMITE_INFERIOR = 46
-ALTURA_MIN_GRUPO = 36
+# A linha TOTAL pode descer mais que as posições, até encostar no rodapé.
+LIMITE_TOTAL = 54
+ALTURA_MIN_GRUPO = 32
+ESPACO_GRUPOS = 4
 CORES_CARTOES = [AZUL, HexColor("#3B7A57"), LARANJA, HexColor("#6A50A7"), HexColor("#97781C"), NAVY]
 
 
@@ -145,7 +148,7 @@ class _Proposta:
     def capa(self):
         p = self.p
         self.fundo(NAVY)
-        faixas = ["CDI e Pós-fixados", "Prefixado", "IPCA+", "Alternativos"]
+        faixas = ["CDI", "Prefixado", "Inflação", "Alternativos"]
         altura = H / len(faixas)
         for indice, classe in enumerate(faixas):
             self.c.setFillColor(HexColor(CLASSES[classe][0]))
@@ -201,7 +204,7 @@ class _Proposta:
             "liquidez": liquidez,
             "bloco": bloco,
             "bloco_liquidez": bloco_liquidez,
-            "altura": max(25, bloco + 14, bloco_liquidez + 14),
+            "altura": max(22, bloco + 11, bloco_liquidez + 11),
         }
 
     def desenhar_linha(self, linha, topo, total_carteira):
@@ -291,8 +294,8 @@ class _Proposta:
                     y = abrir(True)
                     bloco = []
                 bloco.append(linha)
-            y = self.desenhar_grupo(y, classe, bloco, soma, total_carteira) - 5
-        if y - 34 < LIMITE_INFERIOR:
+            y = self.desenhar_grupo(y, classe, bloco, soma, total_carteira) - ESPACO_GRUPOS
+        if y + 1 < LIMITE_TOTAL:
             self.rodape(nota)
             y = abrir(True)
         self.linha_total(y + 1, total_carteira)

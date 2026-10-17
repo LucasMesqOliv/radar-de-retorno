@@ -11,6 +11,7 @@ from carteira import (
     AVISO_PADRAO,
     ORDEM_CLASSES,
     calcular_movimentacoes,
+    classe_atual,
     fmt_pct,
     fmt_reais,
     normalizar_posicoes,
@@ -58,28 +59,34 @@ def _posicao(classe, produto, detalhe, valor, liquidez):
 # Carteira fictícia, só para mostrar como a página funciona.
 EXEMPLO = {
     "atual": [
-        _posicao("CDI e Pós-fixados", "CDB DI liquidez diária", "", 400_000, "D+0"),
-        _posicao("CDI e Pós-fixados", "Previdência RF Referenciado DI",
+        _posicao("CDI", "CDB DI liquidez diária", "", 400_000, "D+0"),
+        _posicao("CDI", "Previdência RF Referenciado DI",
                  "Previdência · CDI", 250_000, "Previdência"),
+        _posicao("Inflação", "Debênture incentivada",
+                 "IPCA + 6,5% a.a. (isenta de IR)", 50_000, "Secundário / Venc. 05/2032"),
         _posicao("Multimercado", "Fundo multimercado macro",
                  "Gestão ativa · multimercado", 120_000, "D+30"),
-        _posicao("IPCA+", "Debênture incentivada",
-                 "IPCA + 6,5% a.a. (isenta de IR)", 50_000, "Secundário / Venc. 05/2032"),
+        _posicao("RV Brasil", "Fundo de ações Brasil", "Gestão ativa · ações",
+                 60_000, "D+32"),
         _posicao("Alternativos", "Op. estruturada S&P 500 com piso",
                  "mín. 40% no período ou 100% do S&P 500", 80_000, "Venc. 03/2031"),
     ],
     "recomendada": [
-        _posicao("CDI e Pós-fixados", "CDB DI liquidez diária", "", 250_000, "D+0"),
-        _posicao("CDI e Pós-fixados", "Previdência RF Referenciado DI",
+        _posicao("CDI", "CDB DI liquidez diária", "", 210_000, "D+0"),
+        _posicao("CDI", "Previdência RF Referenciado DI",
                  "Previdência · CDI", 250_000, "Previdência"),
-        _posicao("CDI e Pós-fixados", "LCI pós-fixada", "90% do CDI (isenta de IR)",
+        _posicao("CDI", "LCI pós-fixada", "90% do CDI (isenta de IR)",
                  60_000, "Prazo 12 meses"),
-        _posicao("Multimercado", "Fundo multimercado macro",
-                 "Gestão ativa · multimercado", 120_000, "D+30"),
         _posicao("Prefixado", "CRI prefixado", "12,5% a.a. (isento de IR)",
                  40_000, "Secundário / prazo 6 anos"),
-        _posicao("IPCA+", "Debênture incentivada",
+        _posicao("Inflação", "Debênture incentivada",
                  "IPCA + 6,5% a.a. (isenta de IR)", 50_000, "Secundário / Venc. 05/2032"),
+        _posicao("Multimercado", "Fundo multimercado macro",
+                 "Gestão ativa · multimercado", 120_000, "D+30"),
+        _posicao("RV Brasil", "Fundo de ações Brasil", "Gestão ativa · ações",
+                 60_000, "D+32"),
+        _posicao("RV Exterior", "ETF de ações globais", "Bolsa global em reais",
+                 40_000, "D+2"),
         _posicao("Alternativos", "Op. estruturada S&P 500 com piso",
                  "mín. 40% no período ou 100% do S&P 500", 80_000, "Venc. 03/2031"),
         _posicao("Alternativos", "Op. estruturada IPCA + S&P 500",
@@ -109,6 +116,8 @@ def _df_posicoes(linhas) -> pd.DataFrame:
     for rotulo in COLUNAS.values():
         if rotulo == "Valor":
             df[rotulo] = pd.to_numeric(df[rotulo], errors="coerce").astype(float)
+        elif rotulo == "Classe":
+            df[rotulo] = df[rotulo].map(classe_atual).astype(object)
         else:
             df[rotulo] = df[rotulo].map(texto_limpo).astype(object)
     return df
@@ -302,8 +311,9 @@ def pagina_montagem_carteira():
             <span class="radar-hero-kicker">MONTAGEM DE CARTEIRA</span>
             <h1>Monte a proposta por classe e gere o PDF.</h1>
             <p>
-                Cadastre a carteira atual e a recomendada separando CDI e
-                pós-fixados, prefixados, IPCA+, multimercado e alternativos.
+                Cadastre a carteira atual e a recomendada separando CDI,
+                prefixados, inflação, multimercado, renda variável Brasil e
+                exterior e alternativos.
                 Percentuais, movimentações e posições novas são calculados
                 automaticamente.
             </p>

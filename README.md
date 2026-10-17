@@ -19,8 +19,8 @@ O arquivo local de secrets não é enviado ao repositório.
 ## Montagem de carteira
 
 A aba **Montagem de carteira** monta propostas de realocação em PDF (páginas
-16:9). Cada posição recebe uma classe — CDI e Pós-fixados, Prefixado, IPCA+,
-Multimercado ou Alternativos — e o PDF agrupa a carteira atual e a recomendada
+16:9). Cada posição recebe uma classe — CDI, Prefixado, Inflação, Multimercado,
+RV Brasil, RV Exterior ou Alternativos — e o PDF agrupa a carteira atual e a recomendada
 por classe, com percentuais, movimentações (resgates, aplicações e aporte) e
 selo "novo" nos produtos que entram.
 

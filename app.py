@@ -498,8 +498,8 @@ def pagina_inicial():
                 "a proposta de realocação em PDF."
             ),
             "termos": (
-                "carteira proposta alocação realocação pdf pós-fixado prefixado "
-                "ipca alternativos multimercado cliente"
+                "carteira proposta alocação realocação pdf cdi prefixado inflação "
+                "ipca alternativos multimercado renda variável ações exterior cliente"
             ),
         },
     ]

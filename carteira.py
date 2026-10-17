@@ -2,13 +2,18 @@
 import math
 
 CLASSES = {
-    "CDI e Pós-fixados": ("#3B7A57", "#E8F1EB"),
+    "CDI": ("#3B7A57", "#E8F1EB"),
     "Prefixado": ("#C0612B", "#FAEDE3"),
-    "IPCA+": ("#3B5EA6", "#E6ECF6"),
+    "Inflação": ("#3B5EA6", "#E6ECF6"),
     "Multimercado": ("#97781C", "#F5EFDB"),
+    "RV Brasil": ("#17808F", "#E2F2F4"),
+    "RV Exterior": ("#A63D6B", "#F7E7EE"),
     "Alternativos": ("#6A50A7", "#EEEAF6"),
 }
 ORDEM_CLASSES = list(CLASSES)
+
+# Nomes antigos, para abrir propostas salvas antes da troca.
+NOMES_ANTIGOS = {"CDI e Pós-fixados": "CDI", "IPCA+": "Inflação"}
 
 MESES = [
     "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
@@ -33,6 +38,11 @@ def texto_limpo(valor) -> str:
     return " ".join(str(valor).split())
 
 
+def classe_atual(valor) -> str:
+    classe = texto_limpo(valor)
+    return NOMES_ANTIGOS.get(classe, classe)
+
+
 def numero_positivo(valor):
     try:
         numero = float(valor)
@@ -47,7 +57,7 @@ def normalizar_posicoes(linhas):
     """Devolve as posições válidas e quantas linhas preenchidas ficaram de fora."""
     posicoes, ignoradas = [], 0
     for linha in linhas or []:
-        classe = texto_limpo(linha.get("classe"))
+        classe = classe_atual(linha.get("classe"))
         produto = texto_limpo(linha.get("produto"))
         detalhe = texto_limpo(linha.get("detalhe"))
         liquidez = texto_limpo(linha.get("liquidez"))
