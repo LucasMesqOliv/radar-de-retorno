@@ -23,6 +23,16 @@ MESES = [
     "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
 ]
 
+# Aviso que vinha preenchido até out/2026. Sessões abertas e propostas salvas
+# com ele passam a ficar sem aviso, como as novas.
+AVISO_ANTIGO = (
+    "Este material tem caráter informativo e não constitui oferta ou garantia de "
+    "rentabilidade. Rentabilidade passada não é garantia de rentabilidade futura. "
+    "Títulos de crédito privado estão sujeitos ao risco do emissor e a preços de "
+    "mercado se vendidos antes do vencimento; operações estruturadas têm retorno "
+    "definido no vencimento. Leia os documentos de cada oferta antes de investir."
+)
+
 # Diferenças abaixo de R$ 0,50 são arredondamento, não movimentação.
 TOLERANCIA = 0.5
 

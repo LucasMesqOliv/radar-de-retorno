@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from carteira import (
+    AVISO_ANTIGO,
     CLASSES,
     ORDEM_CLASSES,
     calcular_movimentacoes,
@@ -160,6 +161,8 @@ def _carregar_dados(dados: dict):
     for chave, padrao in CAMPOS.items():
         valor = dados.get(chave.removeprefix("mc_"), padrao)
         st.session_state[chave] = bool(valor) if isinstance(padrao, bool) else texto_limpo(valor)
+    if st.session_state["mc_aviso"] == AVISO_ANTIGO:
+        st.session_state["mc_aviso"] = ""
     try:
         data_base = date.fromisoformat(str(dados.get("data_base")))
     except ValueError:
@@ -185,6 +188,8 @@ def _inicializar():
     for chave in [*CAMPOS, "mc_data_base"]:
         if chave not in st.session_state:
             st.session_state[chave] = memoria.get(chave, CAMPOS.get(chave, _hoje()))
+    if texto_limpo(st.session_state["mc_aviso"]) == AVISO_ANTIGO:
+        st.session_state["mc_aviso"] = ""
     for carteira, nome in LISTAS.items():
         if nome not in st.session_state:
             # Sessão aberta antes da troca das tabelas por cartões.
