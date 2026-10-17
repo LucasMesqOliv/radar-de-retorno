@@ -1,14 +1,17 @@
 """Regras da montagem de carteira: classes, totais e movimentações."""
 import math
 
+# (cor dos gráficos e faixas, fundo claro, cor do nome da classe).
+# As cores dos gráficos, nesta ordem, foram conferidas para leitura por
+# daltônicos; o nome usa um tom mais escuro para ficar legível sobre o fundo.
 CLASSES = {
-    "CDI": ("#3B7A57", "#E8F1EB"),
-    "Prefixado": ("#C0612B", "#FAEDE3"),
-    "Inflação": ("#3B5EA6", "#E6ECF6"),
-    "Multimercado": ("#97781C", "#F5EFDB"),
-    "RV Brasil": ("#17808F", "#E2F2F4"),
-    "RV Exterior": ("#A63D6B", "#F7E7EE"),
-    "Alternativos": ("#6A50A7", "#EEEAF6"),
+    "CDI": ("#0D7A4D", "#E6F2EC", "#0D7A4D"),
+    "Prefixado": ("#EF8B4D", "#FDEEE4", "#B4521B"),
+    "Inflação": ("#2A78D6", "#E7EFFA", "#1F5FAF"),
+    "Multimercado": ("#B88400", "#F6EEDA", "#8A6400"),
+    "RV Brasil": ("#00809A", "#E0F1F4", "#006878"),
+    "RV Exterior": ("#EC88AE", "#FCEBF2", "#B03F70"),
+    "Alternativos": ("#5A48CF", "#ECEAF9", "#4A3AB0"),
 }
 ORDEM_CLASSES = list(CLASSES)
 

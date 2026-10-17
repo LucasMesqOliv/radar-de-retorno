@@ -229,7 +229,7 @@ class _Proposta:
             y -= 10
 
     def desenhar_grupo(self, topo, classe, linhas, soma, total_carteira):
-        cor, fundo = (HexColor(valor) for valor in CLASSES[classe])
+        cor, fundo, cor_nome = (HexColor(valor) for valor in CLASSES[classe])
         altura = sum(linha["altura"] for linha in linhas)
         if altura < ALTURA_MIN_GRUPO:
             linhas[-1]["altura"] += ALTURA_MIN_GRUPO - altura
@@ -240,7 +240,7 @@ class _Proposta:
         c.setFillColor(cor)
         c.rect(M, topo - altura, 4, altura, fill=1, stroke=0)
         centro = topo - altura / 2
-        self.texto(classe, M + 16, centro + 2, SERIF, 14, cor)
+        self.texto(classe, M + 16, centro + 2, SERIF, 14, cor_nome)
         self.texto(f"{fmt_reais(soma)} · {fmt_pct(soma / total_carteira)}",
                    M + 16, centro - 11, SANS, 8, CINZA)
         y = topo
@@ -420,7 +420,8 @@ class _Proposta:
         for classe in classes:
             antes = fmt_pct(resumo_atual[classe] / total_atual) if total_atual else "0,0%"
             depois = fmt_pct(resumo_recomendado[classe] / total_recomendado) if total_recomendado else "0,0%"
-            self.texto(classe, x2 + 22, yc, SANS, 9.5, GRAFITE)
+            self.ponto(x2 + 26, yc, classe)
+            self.texto(classe, x2 + 36, yc, SANS, 9.5, GRAFITE)
             self.texto(depois, direita, yc, SANS_B, 9.5, NAVY, "direita")
             largura_depois = stringWidth(depois, SANS_B, 9.5)
             self.seta(direita - largura_depois - 5, yc)
@@ -428,11 +429,114 @@ class _Proposta:
             yc -= 19.5
 
         if nota:
-            yn = topo_classes - altura_classes - 16
-            for linha in _linhas(nota, SANS, 7.8, largura2, 6):
-                self.texto(linha, x2, yn, SANS, 7.8, CINZA)
-                yn -= 10.5
+            fim_esquerda = topo - quantidade * altura_linha
+            fim_direita = topo_classes - altura_classes
+            self.quadro_comentario(nota, min(fim_esquerda, fim_direita) - 16)
         self.rodape(f"Valores líquidos. Data base: {self.p['data_base']:%d/%m/%Y}.")
+
+    def quadro_comentario(self, nota, topo):
+        """Comentário livre em quadro de largura total; cada linha vira um tópico."""
+        linhas_digitadas = [linha.strip() for linha in nota.splitlines() if linha.strip()]
+        marcadas = any(linha[:1] in "-•*" for linha in linhas_digitadas)
+        itens = [linha.lstrip("-•* ").strip() for linha in linhas_digitadas]
+        topicos = len(itens) > 1 or marcadas
+        largura = X_FIM - M
+        recuo = 14 if topicos else 0
+        maximo = int((topo - 40 - 54) // 14)
+        if maximo < 1:
+            return
+        blocos = []
+        for item in itens:
+            for indice, linha in enumerate(simpleSplit(item, SANS, 10, largura - 48 - recuo)):
+                blocos.append((indice == 0 and topicos, linha))
+        if len(blocos) > maximo:
+            blocos = blocos[:maximo]
+            marcador, ultima = blocos[-1]
+            blocos[-1] = (marcador, _cortar(ultima + "…", SANS, 10, largura - 48 - recuo))
+        altura = 54 + 14 * len(blocos)
+        c = self.c
+        c.setFillColor(white)
+        c.setStrokeColor(LINHA)
+        c.setLineWidth(0.8)
+        c.rect(M, topo - altura, largura, altura, fill=1, stroke=1)
+        c.setFillColor(LARANJA)
+        c.rect(M, topo - altura, 4, altura, fill=1, stroke=0)
+        self.texto("COMENTÁRIOS", M + 24, topo - 22, SANS_B, 7.5, LARANJA, espacamento=0.6)
+        y = topo - 42
+        for marcador, linha in blocos:
+            if marcador:
+                self.texto("•", M + 24, y, SANS_B, 10, LARANJA)
+            self.texto(linha, M + 24 + recuo, y, SANS, 10, GRAFITE)
+            y -= 14
+
+    def ponto(self, x, y_base, classe):
+        self.c.setFillColor(HexColor(CLASSES[classe][0]))
+        self.c.circle(x, y_base + 3.3, 3.6, fill=1, stroke=0)
+
+    # Alocação por classe ---------------------------------------------------
+    def pagina_alocacao(self, atual, recomendada):
+        carteiras = [
+            (rotulo, posicoes)
+            for rotulo, posicoes in (("Carteira atual", atual), ("Carteira recomendada", recomendada))
+            if posicoes
+        ]
+        subtitulo = (
+            "Carteira atual e carteira recomendada  •  percentual do patrimônio de cada carteira"
+            if len(carteiras) == 2 else "Percentual do patrimônio em cada classe"
+        )
+        self.cabecalho("Diversificação", "Alocação por classe", subtitulo)
+        espaco = 24
+        largura = (W - 2 * M - espaco) / 2
+        inicio = M if len(carteiras) == 2 else M + (W - 2 * M - largura) / 2
+        for indice, (rotulo, posicoes) in enumerate(carteiras):
+            self.rosca(inicio + indice * (largura + espaco), H - 112, largura, rotulo, posicoes)
+        self.rodape(f"Valores líquidos. Data base: {self.p['data_base']:%d/%m/%Y}.")
+
+    def rosca(self, x, topo, largura, rotulo, posicoes):
+        c = self.c
+        altura = 284
+        c.setFillColor(white)
+        c.setStrokeColor(LINHA)
+        c.setLineWidth(0.8)
+        c.rect(x, topo - altura, largura, altura, fill=1, stroke=1)
+        self.texto(rotulo, x + 24, topo - 32, SERIF, 15, NAVY)
+
+        soma = resumo_por_classe(posicoes)
+        total_carteira = total(posicoes)
+        classes = [classe for classe in ORDEM_CLASSES if soma[classe] > 0]
+        raio, furo = 88, 56
+        cx, cy = x + 24 + raio, topo - 60 - raio
+        if len(classes) == 1:
+            c.setFillColor(HexColor(CLASSES[classes[0]][0]))
+            c.circle(cx, cy, raio, fill=1, stroke=0)
+        else:
+            inicio = 90.0
+            c.setStrokeColor(white)
+            c.setLineWidth(2)
+            for classe in classes:
+                extensao = 360 * soma[classe] / total_carteira
+                c.setFillColor(HexColor(CLASSES[classe][0]))
+                c.wedge(cx - raio, cy - raio, cx + raio, cy + raio,
+                        inicio - extensao, extensao, stroke=1, fill=1)
+                inicio -= extensao
+        c.setFillColor(white)
+        c.circle(cx, cy, furo, fill=1, stroke=0)
+        valor = fmt_compacto(total_carteira)
+        self.texto(valor, cx - stringWidth(valor, SERIF, 16) / 2, cy + 1, SERIF, 16, NAVY)
+        legenda = "PATRIMÔNIO"
+        largura_legenda = stringWidth(legenda, SANS_B, 6.5) + 0.6 * (len(legenda) - 1)
+        self.texto(legenda, cx - largura_legenda / 2, cy - 13, SANS_B, 6.5, CINZA, espacamento=0.6)
+
+        x_legenda = cx + raio + 26
+        direita = x + largura - 22
+        y = topo - 72
+        passo = min(30, 210 / max(1, len(classes)))
+        for classe in classes:
+            self.ponto(x_legenda + 4, y, classe)
+            self.texto(classe, x_legenda + 14, y, SANS, 9.5, GRAFITE)
+            self.texto(fmt_pct(soma[classe] / total_carteira), direita, y, SANS_B, 9.5, NAVY, "direita")
+            self.texto(fmt_reais(soma[classe]), x_legenda + 14, y - 11, SANS, 7.5, CINZA)
+            y -= passo
 
     @staticmethod
     def _resumir(itens, maximo, rotulo):
@@ -497,6 +601,8 @@ class _Proposta:
             novos = produtos_novos(atual, recomendada) if atual else set()
             self.pagina_carteira("Proposta de alocação", "Carteira Recomendada",
                                  recomendada, p.get("nota_recomendada", ""), novos)
+        if (atual or recomendada) and paginas.get("alocacao", True):
+            self.pagina_alocacao(atual, recomendada)
         cartoes = p.get("pontos", [])[:6]
         if paginas.get("pontos", True) and (cartoes or p.get("aviso")):
             self.pagina_pontos(p.get("titulo_pontos", ""), cartoes, p.get("aviso", ""))
