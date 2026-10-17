@@ -1,5 +1,7 @@
 """Montagem de carteira: posição atual, proposta por classe e PDF."""
+import copy
 from datetime import date, datetime, timedelta, timezone
+from html import escape
 import json
 import re
 import unicodedata
@@ -9,15 +11,16 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from carteira import (
-    AVISO_PADRAO,
     CLASSES,
     ORDEM_CLASSES,
     calcular_movimentacoes,
-    classe_atual,
+    chave_produto,
     fmt_compacto,
     fmt_pct,
     fmt_reais,
     normalizar_posicoes,
+    numero_positivo,
+    produtos_novos,
     resumo_por_classe,
     texto_limpo,
     total,
@@ -31,7 +34,10 @@ COLUNAS = {
     "detalhe": "Detalhe",
 }
 COLUNAS_PONTOS = {"titulo": "Título", "texto": "Texto"}
-TABELAS = ("mc_atual", "mc_recomendada", "mc_pontos")
+TABELAS = ("mc_pontos",)
+# As posições ficam em listas comuns da sessão (não em widgets), então
+# sobrevivem à troca de página sem cuidado extra.
+LISTAS = {"atual": "mc_lista_atual", "recomendada": "mc_lista_recomendada"}
 PAGINAS = {
     "mc_pag_capa": "Capa",
     "mc_pag_atual": "Carteira atual",
@@ -50,7 +56,7 @@ CAMPOS = {
     "mc_nota_recomendada": "Valores líquidos; valores e percentuais arredondados.",
     "mc_nota_movimentacoes": "",
     "mc_titulo_pontos": "Pontos de atenção",
-    "mc_aviso": AVISO_PADRAO,
+    "mc_aviso": "",
     **{chave: True for chave in PAGINAS},
 }
 
@@ -112,21 +118,6 @@ def _hoje() -> date:
     return datetime.now(timezone(timedelta(hours=-3))).date()
 
 
-def _df_posicoes(linhas) -> pd.DataFrame:
-    df = pd.DataFrame(
-        [{rotulo: linha.get(campo) for campo, rotulo in COLUNAS.items()} for linha in linhas],
-        columns=list(COLUNAS.values()),
-    )
-    for rotulo in COLUNAS.values():
-        if rotulo == "Valor":
-            df[rotulo] = pd.to_numeric(df[rotulo], errors="coerce").astype(float)
-        elif rotulo == "Classe":
-            df[rotulo] = df[rotulo].map(classe_atual).astype(object)
-        else:
-            df[rotulo] = df[rotulo].map(texto_limpo).astype(object)
-    return df
-
-
 def _df_pontos(cartoes) -> pd.DataFrame:
     return pd.DataFrame(
         [{rotulo: texto_limpo(cartao.get(campo)) for campo, rotulo in COLUNAS_PONTOS.items()}
@@ -177,10 +168,14 @@ def _carregar_dados(dados: dict):
     st.session_state["mc_memoria"] = {
         chave: st.session_state[chave] for chave in [*CAMPOS, "mc_data_base"]
     }
-    _substituir_tabela("mc_atual", _df_posicoes(dados.get("atual") or []))
-    _substituir_tabela("mc_recomendada", _df_posicoes(dados.get("recomendada") or []))
+    ignoradas = 0
+    for carteira, nome in LISTAS.items():
+        posicoes, fora = normalizar_posicoes(dados.get(carteira) or [])
+        st.session_state[nome] = posicoes
+        ignoradas += fora
     _substituir_tabela("mc_pontos", _df_pontos(dados.get("pontos") or []))
     st.session_state.pop("mc_pdf", None)
+    return ignoradas
 
 
 def _inicializar():
@@ -190,6 +185,12 @@ def _inicializar():
     for chave in [*CAMPOS, "mc_data_base"]:
         if chave not in st.session_state:
             st.session_state[chave] = memoria.get(chave, CAMPOS.get(chave, _hoje()))
+    for carteira, nome in LISTAS.items():
+        if nome not in st.session_state:
+            # Sessão aberta antes da troca das tabelas por cartões.
+            antiga = st.session_state.get(f"mc_{carteira}_ultimo")
+            linhas = _linhas_do_df(antiga, COLUNAS) if antiga is not None else []
+            st.session_state[nome] = normalizar_posicoes(linhas)[0]
     for nome in TABELAS:
         if _chave_editor(nome) not in st.session_state:
             st.session_state[nome] = st.session_state[nome + "_ultimo"]
@@ -208,22 +209,25 @@ def _ao_enviar_arquivo():
             "erro", "Arquivo inválido: abra um .json salvo por esta página.",
         )
         return
-    _carregar_dados(dados)
-    st.session_state["mc_mensagem"] = ("ok", f"Proposta {arquivo.name} carregada.")
+    ignoradas = _carregar_dados(dados)
+    texto = f"Proposta {arquivo.name} carregada."
+    if ignoradas:
+        texto += (f" {ignoradas} linha(s) ficaram de fora por falta de classe, "
+                  "produto ou valor.")
+    st.session_state["mc_mensagem"] = ("ok", texto)
 
 
 def _copiar_atual():
-    atual = st.session_state["mc_atual_ultimo"].copy()
-    _substituir_tabela("mc_recomendada", atual)
+    st.session_state[LISTAS["recomendada"]] = copy.deepcopy(st.session_state[LISTAS["atual"]])
 
 
-def _exportar(atual_df, recomendada_df, pontos_df) -> str:
+def _exportar(pontos_df) -> str:
     dados = {"tipo": "radar-de-retorno/proposta-carteira", "versao": 1}
     for chave in CAMPOS:
         dados[chave.removeprefix("mc_")] = st.session_state[chave]
     dados["data_base"] = st.session_state["mc_data_base"].isoformat()
-    dados["atual"] = _linhas_do_df(atual_df, COLUNAS)
-    dados["recomendada"] = _linhas_do_df(recomendada_df, COLUNAS)
+    for carteira, nome in LISTAS.items():
+        dados[carteira] = st.session_state[nome]
     dados["pontos"] = _pontos_validos(pontos_df)
     return json.dumps(dados, ensure_ascii=False, indent=2)
 
@@ -233,33 +237,134 @@ def _slug(texto: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", sem_acento.lower()).strip("-")
 
 
-# Componentes ----------------------------------------------------------------
-def _editor_posicoes(nome: str) -> pd.DataFrame:
-    return st.data_editor(
-        st.session_state[nome],
-        key=_chave_editor(nome),
-        num_rows="dynamic",
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "Classe": st.column_config.SelectboxColumn(
-                "Classe", options=ORDEM_CLASSES, required=True,
-                default=ORDEM_CLASSES[0], width=150,
-            ),
-            "Produto": st.column_config.TextColumn("Produto", required=True, width=280),
-            "Valor": st.column_config.NumberColumn(
-                "Valor (R$)", min_value=0.0, step=1.0, format="localized",
-                required=True, width=115,
-            ),
-            "Liquidez / vencimento": st.column_config.TextColumn(
-                "Liquidez / vencimento", width=190,
-            ),
-            "Detalhe": st.column_config.TextColumn(
-                "Detalhe", width=330,
-                help="Linha menor abaixo do produto. Ex.: Previdência · CDI",
-            ),
-        },
-    )
+# Posições em cartões ----------------------------------------------------------
+def _ler_valor(texto) -> float | None:
+    """Aceita 250000, 250.000, 250.000,50 ou R$ 250.000."""
+    limpo = str(texto or "").replace("R$", "").replace(" ", "").strip()
+    if "," in limpo:
+        limpo = limpo.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"\d{1,3}(\.\d{3})+", limpo):
+        limpo = limpo.replace(".", "")
+    return numero_positivo(limpo)
+
+
+def _valor_texto(valor: float) -> str:
+    texto = f"{valor:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    return texto.removesuffix(",00")
+
+
+def _posicao_do_formulario(classe, produto, valor, liquidez, detalhe):
+    numero = _ler_valor(valor)
+    if not texto_limpo(produto) or numero is None:
+        return None
+    return {
+        "classe": classe,
+        "produto": texto_limpo(produto),
+        "detalhe": texto_limpo(detalhe),
+        "valor": numero,
+        "liquidez": texto_limpo(liquidez),
+    }
+
+
+def _formulario_adicionar(carteira: str):
+    with st.form(f"mc_form_{carteira}", clear_on_submit=True):
+        st.markdown('<div class="mc-form-titulo">Adicionar posição</div>', unsafe_allow_html=True)
+        coluna_1, coluna_2, coluna_3 = st.columns([1.3, 2.7, 1.3])
+        classe = coluna_1.selectbox("Classe", ORDEM_CLASSES, key=f"mc_add_classe_{carteira}")
+        produto = coluna_2.text_input("Produto", key=f"mc_add_produto_{carteira}",
+                                      placeholder="Ex.: CDB DI liquidez diária")
+        valor = coluna_3.text_input("Valor (R$)", key=f"mc_add_valor_{carteira}",
+                                    placeholder="Ex.: 250.000")
+        coluna_4, coluna_5, coluna_6 = st.columns([2, 2.5, 1.5], vertical_alignment="bottom")
+        liquidez = coluna_4.text_input("Liquidez / vencimento", key=f"mc_add_liquidez_{carteira}",
+                                       placeholder="Ex.: D+0 ou Venc. 05/2032")
+        detalhe = coluna_5.text_input("Detalhe (opcional)", key=f"mc_add_detalhe_{carteira}",
+                                      placeholder="Ex.: 90% do CDI (isenta de IR)")
+        enviado = coluna_6.form_submit_button("Adicionar", type="primary", width="stretch")
+    if enviado:
+        posicao = _posicao_do_formulario(classe, produto, valor, liquidez, detalhe)
+        if posicao is None:
+            st.error("Preencha o produto e um valor maior que zero.")
+        else:
+            st.session_state[LISTAS[carteira]] = [*st.session_state[LISTAS[carteira]], posicao]
+
+
+@st.dialog("Editar posição")
+def _dialogo_editar(carteira: str, indice: int):
+    posicoes = st.session_state[LISTAS[carteira]]
+    if indice >= len(posicoes):
+        st.rerun()
+    item = posicoes[indice]
+    with st.form("mc_form_editar", border=False):
+        classe = st.selectbox("Classe", ORDEM_CLASSES, index=ORDEM_CLASSES.index(item["classe"]))
+        produto = st.text_input("Produto", value=item["produto"])
+        valor = st.text_input("Valor (R$)", value=_valor_texto(item["valor"]))
+        liquidez = st.text_input("Liquidez / vencimento", value=item["liquidez"])
+        detalhe = st.text_input("Detalhe (opcional)", value=item["detalhe"])
+        salvar = st.form_submit_button("Salvar", type="primary", width="stretch")
+    if salvar:
+        posicao = _posicao_do_formulario(classe, produto, valor, liquidez, detalhe)
+        if posicao is None:
+            st.error("Preencha o produto e um valor maior que zero.")
+        else:
+            nova = list(posicoes)
+            nova[indice] = posicao
+            st.session_state[LISTAS[carteira]] = nova
+            st.rerun()
+
+
+def _remover(carteira: str, indice: int):
+    nova = list(st.session_state[LISTAS[carteira]])
+    if indice < len(nova):
+        del nova[indice]
+    st.session_state[LISTAS[carteira]] = nova
+
+
+def _lista_posicoes(carteira: str, novos: set):
+    posicoes = st.session_state[LISTAS[carteira]]
+    if not posicoes:
+        st.info("Nenhuma posição ainda. Use o formulário acima para adicionar.")
+        return
+    total_carteira = total(posicoes)
+    for numero_classe, classe in enumerate(ORDEM_CLASSES):
+        itens = [(indice, item) for indice, item in enumerate(posicoes) if item["classe"] == classe]
+        if not itens:
+            continue
+        cor, _, cor_nome = CLASSES[classe]
+        soma = sum(item["valor"] for _, item in itens)
+        st.markdown(
+            f'<div class="mc-grupo"><span class="mc-ponto" style="background:{cor}"></span>'
+            f'<span class="mc-grupo-nome" style="color:{cor_nome}">{classe}</span>'
+            f'<span class="mc-grupo-total">{fmt_reais(soma)} · {fmt_pct(soma / total_carteira)}</span></div>',
+            unsafe_allow_html=True,
+        )
+        for indice, item in itens:
+            with st.container(key=f"mc_l{numero_classe}_{carteira}_{indice}"):
+                info, valor, liquidez, editar, remover = st.columns(
+                    [4.6, 2, 2.6, 0.55, 0.55], vertical_alignment="center", gap="small",
+                )
+                selo = (' <span class="mc-novo">novo</span>'
+                        if chave_produto(item["produto"]) in novos else "")
+                detalhe = (f'<div class="mc-det">{escape(item["detalhe"])}</div>'
+                           if item["detalhe"] else "")
+                info.markdown(
+                    f'<div class="mc-prod">{escape(item["produto"])}{selo}</div>{detalhe}',
+                    unsafe_allow_html=True,
+                )
+                valor.markdown(
+                    f'<div class="mc-val">{fmt_reais(item["valor"])}</div>'
+                    f'<div class="mc-det">{fmt_pct(item["valor"] / total_carteira)}</div>',
+                    unsafe_allow_html=True,
+                )
+                liquidez.markdown(
+                    f'<div class="mc-liq">{escape(item["liquidez"]) or "—"}</div>',
+                    unsafe_allow_html=True,
+                )
+                if editar.button(":material/edit:", key=f"mc_editar_{carteira}_{indice}",
+                                 help="Editar"):
+                    _dialogo_editar(carteira, indice)
+                remover.button(":material/delete:", key=f"mc_remover_{carteira}_{indice}",
+                               help="Remover", on_click=_remover, args=(carteira, indice))
 
 
 ESTILO = """
@@ -293,8 +398,31 @@ ESTILO = """
 .mc-de b { color:var(--radar-ink); font-weight:760; }
 .mc-delta { padding:.16rem .55rem; border-radius:99px; background:#eef2f7; color:#2b3a55;
     font-size:.76rem; font-weight:700; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.mc-form-titulo { color:var(--radar-ink); font-size:.95rem; font-weight:760; }
+[data-testid="stFormSubmitButton"] button { border-radius:.58rem; border-color:var(--radar-blue);
+    background:linear-gradient(100deg, var(--radar-blue), #0f8ee9); color:#fff; font-weight:700;
+    white-space:nowrap; }
+[data-testid="stFormSubmitButton"] button:hover { color:#fff; border-color:var(--radar-blue); filter:brightness(1.06); }
+.mc-grupo { display:flex; align-items:center; gap:.55rem; margin:.9rem 0 .1rem; }
+.mc-grupo-nome { font-size:1rem; font-weight:780; }
+.mc-grupo-total { color:var(--radar-muted); font-size:.82rem; font-variant-numeric:tabular-nums; }
+[class*="st-key-mc_l"] { background:#fff; border:1px solid #e3e9f2; border-left:4px solid #c8d3e0;
+    border-radius:.65rem; padding:.55rem .55rem .55rem .95rem; gap:0;
+    box-shadow:0 2px 8px rgba(24,44,76,.04); }
+[class*="st-key-mc_l"] button { border:0; background:transparent; min-height:2rem; padding:.2rem .4rem; }
+[class*="st-key-mc_l"] button:hover { background:#eef3fa; }
+.mc-prod { color:var(--radar-ink); font-weight:700; font-size:.95rem; line-height:1.3; }
+.mc-det { color:var(--radar-muted); font-size:.78rem; line-height:1.35; }
+.mc-val { color:var(--radar-ink); font-weight:700; font-size:.95rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.mc-liq { color:#4a5266; font-size:.84rem; }
+.mc-novo { display:inline-block; margin-left:.35rem; padding:.05rem .45rem; border-radius:.3rem;
+    background:#c8642a; color:#fff; font-size:.68rem; font-weight:800; vertical-align:middle; }
 </style>
 """
+ESTILO_CLASSES = "<style>" + "".join(
+    f'[class*="st-key-mc_l{indice}_"] {{ border-left-color:{CLASSES[classe][0]}; }}'
+    for indice, classe in enumerate(ORDEM_CLASSES)
+) + "</style>"
 
 
 def _secao(numero: int, titulo: str, texto: str = ""):
@@ -433,7 +561,7 @@ def _resumo(atual, recomendada):
 
 def pagina_montagem_carteira():
     _inicializar()
-    st.markdown(ESTILO, unsafe_allow_html=True)
+    st.markdown(ESTILO + ESTILO_CLASSES, unsafe_allow_html=True)
     st.markdown(
         """
         <div class="radar-topbar">
@@ -487,32 +615,40 @@ def pagina_montagem_carteira():
             st.date_input("Data base", key="mc_data_base", format="DD/MM/YYYY")
 
     with st.container(border=True):
-        _secao(2, "Carteiras", "Uma linha por posição, com a classe escolhida na primeira coluna.")
+        _secao(2, "Carteiras", "Adicione cada posição e escolha a classe. Use o lápis para editar.")
         aba_atual, aba_recomendada = st.tabs(["Carteira atual", "Carteira recomendada"])
         with aba_atual:
             st.caption(
-                "Para um cliente novo, deixe esta tabela vazia: o PDF mostra só a "
+                "Para um cliente novo, deixe a carteira atual vazia: o PDF mostra só a "
                 "carteira recomendada."
             )
-            atual_df = _editor_posicoes("mc_atual")
+            _formulario_adicionar("atual")
+            _lista_posicoes("atual", set())
         with aba_recomendada:
-            st.button("Copiar a carteira atual para cá", on_click=_copiar_atual)
+            if st.session_state[LISTAS["recomendada"]]:
+                # Substituir apaga a proposta montada: só com confirmação.
+                with st.popover("Copiar a carteira atual para cá"):
+                    st.write("Isso substitui todas as posições da carteira recomendada "
+                             "pelas da carteira atual.")
+                    st.button("Substituir", type="primary", key="mc_copiar_confirmar",
+                              on_click=_copiar_atual)
+            else:
+                st.button("Copiar a carteira atual para cá", key="mc_copiar",
+                          on_click=_copiar_atual)
             st.caption(
-                "Edite os valores e inclua os produtos novos. A diferença em relação à "
-                "carteira atual vira resgate ou aplicação, e produtos que não estão na atual "
-                "recebem o selo novo no PDF. Use o mesmo nome do produto nas duas abas."
+                "A diferença em relação à carteira atual vira resgate ou aplicação, e produtos "
+                "que não estão na atual recebem o selo novo. Use o mesmo nome do produto nas "
+                "duas abas."
             )
-            recomendada_df = _editor_posicoes("mc_recomendada")
-
-        atual, ignoradas_atual = normalizar_posicoes(_linhas_do_df(atual_df, COLUNAS))
-        recomendada, ignoradas_recomendada = normalizar_posicoes(
-            _linhas_do_df(recomendada_df, COLUNAS)
-        )
-        if ignoradas_atual or ignoradas_recomendada:
-            st.warning(
-                f"{ignoradas_atual + ignoradas_recomendada} linha(s) ficaram fora do resumo e "
-                "do PDF: toda posição precisa de classe, produto e valor maior que zero."
+            _formulario_adicionar("recomendada")
+            _lista_posicoes(
+                "recomendada",
+                produtos_novos(st.session_state[LISTAS["atual"]],
+                               st.session_state[LISTAS["recomendada"]])
+                if st.session_state[LISTAS["atual"]] else set(),
             )
+        atual = st.session_state[LISTAS["atual"]]
+        recomendada = st.session_state[LISTAS["recomendada"]]
 
     with st.container(border=True):
         _secao(3, "Alocação por classe", "Atualiza a cada edição. Passe o mouse no gráfico para ver os valores.")
@@ -541,7 +677,8 @@ def pagina_montagem_carteira():
                     "Texto": st.column_config.TextColumn("Texto", max_chars=400, width="large"),
                 },
             )
-            st.text_area("Aviso legal", key="mc_aviso", height=110)
+            st.text_area("Aviso legal (opcional)", key="mc_aviso", height=110,
+                         help="Se preenchido, aparece no fim da página de pontos de atenção.")
             st.markdown("**Páginas incluídas**")
             colunas_paginas = st.columns(3)
             for indice, (chave, rotulo) in enumerate(PAGINAS.items()):
@@ -600,7 +737,7 @@ def pagina_montagem_carteira():
     with coluna_json:
         st.download_button(
             "Salvar proposta (.json)",
-            data=_exportar(atual_df, recomendada_df, pontos_df),
+            data=_exportar(pontos_df),
             file_name=f"{nome_arquivo}.json",
             mime="application/json",
             on_click="ignore",
@@ -611,6 +748,4 @@ def pagina_montagem_carteira():
     st.session_state["mc_memoria"] = {
         chave: st.session_state[chave] for chave in [*CAMPOS, "mc_data_base"]
     }
-    st.session_state["mc_atual_ultimo"] = atual_df
-    st.session_state["mc_recomendada_ultimo"] = recomendada_df
     st.session_state["mc_pontos_ultimo"] = pontos_df

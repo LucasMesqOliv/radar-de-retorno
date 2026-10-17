@@ -23,14 +23,6 @@ MESES = [
     "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
 ]
 
-AVISO_PADRAO = (
-    "Este material tem caráter informativo e não constitui oferta ou garantia de "
-    "rentabilidade. Rentabilidade passada não é garantia de rentabilidade futura. "
-    "Títulos de crédito privado estão sujeitos ao risco do emissor e a preços de "
-    "mercado se vendidos antes do vencimento; operações estruturadas têm retorno "
-    "definido no vencimento. Leia os documentos de cada oferta antes de investir."
-)
-
 # Diferenças abaixo de R$ 0,50 são arredondamento, não movimentação.
 TOLERANCIA = 0.5
 
