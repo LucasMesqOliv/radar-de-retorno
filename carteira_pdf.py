@@ -302,7 +302,7 @@ class _Proposta:
         self.rodape(nota)
 
     # Movimentações -------------------------------------------------------
-    def pagina_movimentacoes(self, atual, recomendada, mov, nota):
+    def pagina_movimentacoes(self, atual, recomendada, mov, nota, com_roscas=True):
         total_atual, total_recomendado = total(atual), total(recomendada)
         sem_fluxo = not mov["aporte"] and not mov["saida"]
         if mov["aporte"]:
@@ -339,6 +339,12 @@ class _Proposta:
 
         topo = H - 108
         disponivel = topo - 50
+        if nota:
+            # Guarda espaço para o comentário abaixo da tabela (até 6 linhas),
+            # para ele nunca ficar de fora quando há muitas aplicações.
+            blocos, _ = self._blocos_comentario(nota, 470)
+            reserva = 54 + 14 * min(len(blocos), 6) + 16
+            disponivel = max(17 * 6, disponivel - reserva)
         maximo_itens = int(disponivel // 17) - 3
         origem = self._resumir(origem, max(1, maximo_itens // 2), "Outros resgates")
         destino = self._resumir(destino, max(1, maximo_itens - len(origem)), "Outras aplicações")
@@ -410,12 +416,32 @@ class _Proposta:
             if resumo_atual[classe] or resumo_recomendado[classe]
         ]
         topo_classes = topo - altura_patrimonio - 16
-        altura_classes = 48 + 19.5 * len(classes)
+        # Com as roscas, a lista fica logo abaixo e serve de legenda das cores.
+        raio = 34
+        inicio_lista = 148 if com_roscas else 46
+        passo = 18 if com_roscas else 19.5
+        altura_classes = inicio_lista + passo * (len(classes) - 1) + 16
         c.setFillColor(white)
         c.setStrokeColor(LINHA)
         c.rect(x2, topo_classes - altura_classes, largura2, altura_classes, fill=1, stroke=1)
         self.texto("Mudança por classe", x2 + 22, topo_classes - 25, SERIF, 13.5, NAVY)
-        yc = topo_classes - 46
+        if com_roscas:
+            cy = topo_classes - 44 - raio
+            centro = x2 + largura2 / 2
+            for cx, posicoes, rotulo in (
+                (x2 + largura2 * 0.29, atual, "ATUAL"),
+                (x2 + largura2 * 0.71, recomendada, "RECOMENDADA"),
+            ):
+                self.desenhar_rosca(cx, cy, raio, 21, resumo_por_classe(posicoes), total(posicoes))
+                largura_rotulo = stringWidth(rotulo, SANS_B, 6.5) + 0.6 * (len(rotulo) - 1)
+                self.texto(rotulo, cx - largura_rotulo / 2, cy - raio - 13, SANS_B, 6.5,
+                           CINZA, espacamento=0.6)
+            c.setStrokeColor(NAVY)
+            c.setLineWidth(1.1)
+            c.line(centro - 14, cy, centro + 14, cy)
+            c.line(centro + 9, cy + 4, centro + 14, cy)
+            c.line(centro + 9, cy - 4, centro + 14, cy)
+        yc = topo_classes - inicio_lista
         direita = x2 + largura2 - 18
         for classe in classes:
             antes = fmt_pct(resumo_atual[classe] / total_atual) if total_atual else "0,0%"
@@ -426,52 +452,94 @@ class _Proposta:
             largura_depois = stringWidth(depois, SANS_B, 9.5)
             self.seta(direita - largura_depois - 5, yc)
             self.texto(antes, direita - largura_depois - 21, yc, SANS, 9.5, GRAFITE, "direita")
-            yc -= 19.5
+            yc -= passo
 
         if nota:
             fim_esquerda = topo - quantidade * altura_linha
             fim_direita = topo_classes - altura_classes
-            self.quadro_comentario(nota, min(fim_esquerda, fim_direita) - 16)
+            # Largura total quando couber; senão, o espaço livre de uma das colunas.
+            self.quadro_comentario(nota, [
+                (M, min(fim_esquerda, fim_direita) - 16, X_FIM - M),
+                (M, fim_esquerda - 16, largura),
+                (x2, fim_direita - 16, largura2),
+            ])
         self.rodape(f"Valores líquidos. Data base: {self.p['data_base']:%d/%m/%Y}.")
 
-    def quadro_comentario(self, nota, topo):
-        """Comentário livre em quadro de largura total; cada linha vira um tópico."""
+    @staticmethod
+    def _blocos_comentario(nota, largura):
         linhas_digitadas = [linha.strip() for linha in nota.splitlines() if linha.strip()]
         marcadas = any(linha[:1] in "-•*" for linha in linhas_digitadas)
         itens = [linha.lstrip("-•* ").strip() for linha in linhas_digitadas]
         topicos = len(itens) > 1 or marcadas
-        largura = X_FIM - M
         recuo = 14 if topicos else 0
-        maximo = int((topo - 40 - 54) // 14)
-        if maximo < 1:
-            return
         blocos = []
         for item in itens:
             for indice, linha in enumerate(simpleSplit(item, SANS, 10, largura - 48 - recuo)):
                 blocos.append((indice == 0 and topicos, linha))
-        if len(blocos) > maximo:
-            blocos = blocos[:maximo]
+        return blocos, recuo
+
+    def quadro_comentario(self, nota, opcoes):
+        """Comentário livre em quadro; cada linha digitada vira um tópico.
+
+        Usa a primeira posição de `opcoes` (x, topo, largura) onde o texto
+        cabe inteiro; se nenhuma couber, a que comporta mais linhas.
+        """
+        escolha, melhor = None, None
+        for x, topo, largura in opcoes:
+            blocos, recuo = self._blocos_comentario(nota, largura)
+            capacidade = int((topo - 40 - 54) // 14)
+            if capacidade >= len(blocos):
+                escolha = (x, topo, largura, blocos, recuo)
+                break
+            if capacidade >= 1 and (melhor is None or capacidade > melhor[0]):
+                melhor = (capacidade, (x, topo, largura, blocos[:capacidade], recuo))
+        if escolha is None:
+            if melhor is None:
+                return
+            escolha = melhor[1]
+            x, topo, largura, blocos, recuo = escolha
             marcador, ultima = blocos[-1]
             blocos[-1] = (marcador, _cortar(ultima + "…", SANS, 10, largura - 48 - recuo))
+        x, topo, largura, blocos, recuo = escolha
         altura = 54 + 14 * len(blocos)
         c = self.c
         c.setFillColor(white)
         c.setStrokeColor(LINHA)
         c.setLineWidth(0.8)
-        c.rect(M, topo - altura, largura, altura, fill=1, stroke=1)
+        c.rect(x, topo - altura, largura, altura, fill=1, stroke=1)
         c.setFillColor(LARANJA)
-        c.rect(M, topo - altura, 4, altura, fill=1, stroke=0)
-        self.texto("COMENTÁRIOS", M + 24, topo - 22, SANS_B, 7.5, LARANJA, espacamento=0.6)
+        c.rect(x, topo - altura, 4, altura, fill=1, stroke=0)
+        self.texto("COMENTÁRIOS", x + 24, topo - 22, SANS_B, 7.5, LARANJA, espacamento=0.6)
         y = topo - 42
         for marcador, linha in blocos:
             if marcador:
-                self.texto("•", M + 24, y, SANS_B, 10, LARANJA)
-            self.texto(linha, M + 24 + recuo, y, SANS, 10, GRAFITE)
+                self.texto("•", x + 24, y, SANS_B, 10, LARANJA)
+            self.texto(linha, x + 24 + recuo, y, SANS, 10, GRAFITE)
             y -= 14
 
     def ponto(self, x, y_base, classe):
         self.c.setFillColor(HexColor(CLASSES[classe][0]))
         self.c.circle(x, y_base + 3.3, 3.6, fill=1, stroke=0)
+
+    def desenhar_rosca(self, cx, cy, raio, furo, soma, total_carteira):
+        """Fatias no sentido horário a partir do topo, separadas por 2 pt de branco."""
+        c = self.c
+        classes = [classe for classe in ORDEM_CLASSES if soma[classe] > 0]
+        if len(classes) == 1:
+            c.setFillColor(HexColor(CLASSES[classes[0]][0]))
+            c.circle(cx, cy, raio, fill=1, stroke=0)
+        else:
+            inicio = 90.0
+            c.setStrokeColor(white)
+            c.setLineWidth(2 if raio > 50 else 1.4)
+            for classe in classes:
+                extensao = 360 * soma[classe] / total_carteira
+                c.setFillColor(HexColor(CLASSES[classe][0]))
+                c.wedge(cx - raio, cy - raio, cx + raio, cy + raio,
+                        inicio - extensao, extensao, stroke=1, fill=1)
+                inicio -= extensao
+        c.setFillColor(white)
+        c.circle(cx, cy, furo, fill=1, stroke=0)
 
     # Alocação por classe ---------------------------------------------------
     def pagina_alocacao(self, atual, recomendada):
@@ -504,23 +572,9 @@ class _Proposta:
         soma = resumo_por_classe(posicoes)
         total_carteira = total(posicoes)
         classes = [classe for classe in ORDEM_CLASSES if soma[classe] > 0]
-        raio, furo = 88, 56
+        raio = 88
         cx, cy = x + 24 + raio, topo - 60 - raio
-        if len(classes) == 1:
-            c.setFillColor(HexColor(CLASSES[classes[0]][0]))
-            c.circle(cx, cy, raio, fill=1, stroke=0)
-        else:
-            inicio = 90.0
-            c.setStrokeColor(white)
-            c.setLineWidth(2)
-            for classe in classes:
-                extensao = 360 * soma[classe] / total_carteira
-                c.setFillColor(HexColor(CLASSES[classe][0]))
-                c.wedge(cx - raio, cy - raio, cx + raio, cy + raio,
-                        inicio - extensao, extensao, stroke=1, fill=1)
-                inicio -= extensao
-        c.setFillColor(white)
-        c.circle(cx, cy, furo, fill=1, stroke=0)
+        self.desenhar_rosca(cx, cy, raio, 56, soma, total_carteira)
         valor = fmt_compacto(total_carteira)
         self.texto(valor, cx - stringWidth(valor, SERIF, 16) / 2, cy + 1, SERIF, 16, NAVY)
         legenda = "PATRIMÔNIO"
@@ -593,15 +647,21 @@ class _Proposta:
         if atual and paginas.get("atual", True):
             nota = " ".join(filter(None, [p.get("nota_atual", ""), f"Data base: {data_base:%d/%m/%Y}."]))
             self.pagina_carteira("Posição consolidada", "Carteira Atual", atual, nota, set())
+        roscas = paginas.get("alocacao", True)
+        roscas_desenhadas = False
         if atual and recomendada and paginas.get("movimentacoes", True):
             mov = calcular_movimentacoes(atual, recomendada)
             if mov["resgates"] or mov["aplicacoes"]:
-                self.pagina_movimentacoes(atual, recomendada, mov, p.get("nota_movimentacoes", ""))
+                self.pagina_movimentacoes(atual, recomendada, mov,
+                                          p.get("nota_movimentacoes", ""), roscas)
+                roscas_desenhadas = roscas
         if recomendada and paginas.get("recomendada", True):
             novos = produtos_novos(atual, recomendada) if atual else set()
             self.pagina_carteira("Proposta de alocação", "Carteira Recomendada",
                                  recomendada, p.get("nota_recomendada", ""), novos)
-        if (atual or recomendada) and paginas.get("alocacao", True):
+        # Sem a página de movimentações (cliente novo, por exemplo), as roscas
+        # ganham página própria.
+        if (atual or recomendada) and roscas and not roscas_desenhadas:
             self.pagina_alocacao(atual, recomendada)
         cartoes = p.get("pontos", [])[:6]
         if paginas.get("pontos", True) and (cartoes or p.get("aviso")):
