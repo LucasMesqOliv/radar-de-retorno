@@ -16,6 +16,18 @@ APP_PASSWORD = "sua-senha"
 
 O arquivo local de secrets não é enviado ao repositório.
 
+## Montagem de carteira
+
+A aba **Montagem de carteira** monta propostas de realocação em PDF (páginas
+16:9). Cada posição recebe uma classe — CDI e Pós-fixados, Prefixado, IPCA+,
+Multimercado ou Alternativos — e o PDF agrupa a carteira atual e a recomendada
+por classe, com percentuais, movimentações (resgates, aplicações e aporte) e
+selo "novo" nos produtos que entram.
+
+As propostas não são gravadas no servidor nem no banco: ficam na sessão do
+navegador e podem ser salvas e reabertas como arquivo `.json`. Regras em
+`carteira.py`, PDF em `carteira_pdf.py` e tela em `montagem_carteira.py`.
+
 ## Base de dados local
 
 O aplicativo usa `data/radar_retorno.db`, uma base SQLite compacta com CDI,

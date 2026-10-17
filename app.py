@@ -22,6 +22,7 @@ import requests
 import streamlit as st
 from renda_fixa_visual import ESCALA_CARREGO, comparar_com_carrego
 from curva_di import pagina_curva_di
+from montagem_carteira import pagina_montagem_carteira
 
 from radar_database import (
     cadastro_fundos_atualizado_recentemente,
@@ -486,6 +487,19 @@ def pagina_inicial():
             "termos": (
                 "renda fixa titulo títulos duration convexidade dv01 marcação "
                 "mercado ipca prefixado cupom"
+            ),
+        },
+        {
+            "pagina": "Montagem de carteira",
+            "kicker": "Proposta em PDF",
+            "titulo": "Montagem de carteira",
+            "texto": (
+                "Organize a carteira atual e a recomendada por classe e gere "
+                "a proposta de realocação em PDF."
+            ),
+            "termos": (
+                "carteira proposta alocação realocação pdf pós-fixado prefixado "
+                "ipca alternativos multimercado cliente"
             ),
         },
     ]
@@ -4343,7 +4357,14 @@ with st.sidebar:
     )
     pagina_atual = st.radio(
         "Navegação",
-        ["Início", "Análise de índices", "Fundos", "Renda fixa", "Curva DI"],
+        [
+            "Início",
+            "Análise de índices",
+            "Fundos",
+            "Renda fixa",
+            "Curva DI",
+            "Montagem de carteira",
+        ],
         key="pagina_radar",
     )
 
@@ -4362,6 +4383,11 @@ if pagina_atual == "Curva DI":
 
 if pagina_atual == "Renda fixa":
     pagina_renda_fixa()
+    st.stop()
+
+if pagina_atual == "Montagem de carteira":
+    pagina_montagem_carteira()
+    rodape_radar()
     st.stop()
 
 
