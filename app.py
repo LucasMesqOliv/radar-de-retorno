@@ -4745,113 +4745,308 @@ def analisar_janelas(
     ].copy()
 
 
-def criar_grafico(
-    analise: pd.DataFrame,
-    series_escolhidas: list[str],
-    nomes: dict[str, str],
-    prazo_anos: int,
-    visualizacao: str = "Anualizado em linhas",
-):
-    cores = {
-        "cdi": "#174A7E",
-        "ipca": "#1B7F5A",
-        "prefixado": "#C43D3D",
-        "sp500": "#7A4EAB",
-        "sp500_brl": "#008C95",
-        "sp500_ipca": "#D47A22",
-        "referencia": "#555555",
+LAMINA_CORES = ["#EC0000", "#8E9AAB", "#1F2329", "#C08A1E", "#3F6FB5", "#2E8B6E", "#7A4EAB"]
+LAMINA_CORES_VALOR = ["#B4000A", "#5F6B7A", "#1F2329", "#8A6212", "#2F5891", "#21684F", "#5C3A82"]
+LAMINA_TRACEJADAS = {"prefixado", "referencia"}
+LAMINA_FONTE = "DM Sans, Inter, 'Segoe UI', Arial, sans-serif"
+
+
+def _numero_br(valor: float, casas: int = 2) -> str:
+    return f"{valor:.{casas}f}".replace(".", ",")
+
+
+def _taxa_curta(valor: float) -> str:
+    texto = f"{valor:.2f}".rstrip("0").rstrip(".")
+    if "." not in texto:
+        texto += ",0"
+    return texto.replace(".", ",")
+
+
+def rotulos_lamina(
+    taxa_ipca: float,
+    taxa_prefixada: float,
+    taxa_referencia: float,
+    participacoes: dict[str, float],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Nomes das séries no padrão das lâminas (completo e curto)."""
+
+    def prefixo(codigo: str) -> str:
+        participacao = participacoes.get(codigo, 100.0)
+        return "" if participacao == 100 else f"{_numero_br(participacao, 0)}% do "
+
+    def prefixo_curto(codigo: str) -> str:
+        participacao = participacoes.get(codigo, 100.0)
+        return "" if participacao == 100 else f"{_numero_br(participacao, 0)}% "
+
+    part_sp_ipca = participacoes.get("sp500_ipca", 100.0)
+    sp_ipca = (
+        "S&P 500 + IPCA"
+        if part_sp_ipca == 100
+        else f"{_numero_br(part_sp_ipca, 0)}% do S&P 500 + IPCA"
+    )
+    completos = {
+        "cdi": f"{prefixo('cdi')}CDI",
+        "ipca": f"{prefixo('ipca')}IPCA + {_numero_br(taxa_ipca)}%",
+        "prefixado": f"{prefixo('prefixado')}Prefixado {_numero_br(taxa_prefixada)}% a.a.",
+        "sp500": f"{prefixo('sp500')}S&P 500 (USD)",
+        "sp500_brl": f"{prefixo('sp500_brl')}S&P 500 (BRL)",
+        "sp500_ipca": sp_ipca,
+        "referencia": f"{prefixo('referencia')}Referência {_numero_br(taxa_referencia)}% a.a.",
     }
-    estilos = {"prefixado": "dash", "referencia": "dot"}
-    fig = go.Figure()
-    exibir_acumulado = visualizacao == "Acumulado em linhas"
+    curtos = {
+        "cdi": f"{prefixo_curto('cdi')}CDI",
+        "ipca": f"{prefixo_curto('ipca')}IPCA+{_taxa_curta(taxa_ipca)}%",
+        "prefixado": f"{prefixo_curto('prefixado')}Pré {_taxa_curta(taxa_prefixada)}%",
+        "sp500": f"{prefixo_curto('sp500')}S&P 500",
+        "sp500_brl": f"{prefixo_curto('sp500_brl')}S&P 500 BRL",
+        "sp500_ipca": "S&P+IPCA" if part_sp_ipca == 100 else f"S&P {_numero_br(part_sp_ipca, 0)}%+IPCA",
+        "referencia": f"{prefixo_curto('referencia')}Ref. {_taxa_curta(taxa_referencia)}%",
+    }
+    return completos, curtos
 
-    for codigo in series_escolhidas:
-        rotulo_legenda = abreviar_rotulo_serie(nomes[codigo], 30)
-        if exibir_acumulado:
-            fig.add_trace(
-                go.Scatter(
-                    x=analise["data_final"],
-                    y=analise[f"{codigo}_acumulado"] * 100,
-                    mode="lines",
-                    name=rotulo_legenda,
-                    line={
-                        "color": cores[codigo],
-                        "width": 2.5,
-                        "dash": estilos.get(codigo, "solid"),
-                    },
-                    hovertemplate=(
-                        f"<b>{nomes[codigo]}</b><br>"
-                        "%{x|%m/%Y}<br>Retorno acumulado da janela: "
-                        "%{y:.2f}%<extra></extra>"
-                    ),
-                )
-            )
-        else:
-            fig.add_trace(
-                go.Scatter(
-                    x=analise["data_final"],
-                    y=analise[codigo] * 100,
-                    mode="lines",
-                    name=rotulo_legenda,
-                    line={
-                        "color": cores[codigo],
-                        "width": 2.5,
-                        "dash": estilos.get(codigo, "solid"),
-                    },
-                    hovertemplate=(
-                        f"<b>{nomes[codigo]}</b><br>"
-                        "%{x|%m/%Y}<br>Retorno anualizado: "
-                        "%{y:.2f}%<extra></extra>"
-                    ),
-                )
-            )
 
+def com_artigo(codigo: str, nome: str) -> str:
+    if nome[:1].isdigit():
+        return nome
+    return ("a " if codigo == "referencia" else "o ") + nome
+
+
+def _layout_lamina(fig: go.Figure, altura: int, sufixo: str = "%"):
     fig.update_layout(
-        title={
-            "text": (
-                f"Retornos acumulados em janelas móveis de {prazo_anos} anos"
-                if exibir_acumulado
-                else f"Retornos anualizados em janelas móveis de {prazo_anos} anos"
-            ),
-            "x": 0,
-            "xanchor": "left",
-            "font": {"size": 22},
-        },
-        autosize=False,
-        width=1100,
-        height=520,
-        margin={"l": 25, "r": 20, "t": 75, "b": 110},
+        height=altura,
+        margin={"l": 8, "r": 18, "t": 10, "b": 10},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={"family": LAMINA_FONTE, "color": "#6B7280", "size": 13},
+        showlegend=False,
         hovermode="x unified",
+        hoverlabel={"font": {"family": LAMINA_FONTE}},
         dragmode=False,
-        legend={
-            "orientation": "h",
-            "yanchor": "top",
-            "y": -0.16,
-            "xanchor": "center",
-            "x": 0.5,
-            "entrywidth": 190,
-            "entrywidthmode": "pixels",
-        },
-        plot_bgcolor="white",
-        paper_bgcolor="white",
+        separators=",.",
     )
     fig.update_xaxes(
-        title_text="Data final da janela",
         showgrid=False,
-        dtick="M24",
-        tickformat="%Y",
-        automargin=True,
+        showline=False,
+        tickformat="%m/%Y",
+        nticks=4,
+        ticks="",
         fixedrange=True,
     )
     fig.update_yaxes(
-        title_text="Retorno acumulado da janela" if exibir_acumulado else "Retorno anualizado",
-        ticksuffix="%",
-        gridcolor="#E2E2E2",
-        zerolinecolor="#BBBBBB",
-        automargin=True,
+        ticksuffix=sufixo,
+        gridcolor="#E2E0DB",
+        zeroline=False,
+        showline=False,
+        nticks=6,
         fixedrange=True,
     )
     return fig
+
+
+def _adicionar_linhas(fig, x, series):
+    """series: [(nome, valores, cor, tracejado, principal)] — principal por último."""
+    for nome, valores, cor, tracejado, principal in series:
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=valores,
+                mode="lines",
+                name=nome,
+                line={
+                    "color": cor,
+                    "width": 3.6 if principal else 3.0,
+                    "dash": "dash" if tracejado else "solid",
+                    "shape": "linear",
+                },
+                hovertemplate=f"<b>{escape(nome)}</b>: %{{y:.1f}}<extra></extra>",
+            )
+        )
+    for nome, valores, cor, _, _ in series:
+        fig.add_trace(
+            go.Scatter(
+                x=[x.iloc[-1] if hasattr(x, "iloc") else x[-1]],
+                y=[valores.iloc[-1] if hasattr(valores, "iloc") else valores[-1]],
+                mode="markers",
+                marker={"color": cor, "size": 11, "line": {"color": "#F6F5F2", "width": 2}},
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+
+def criar_grafico_lamina_janelas(
+    analise: pd.DataFrame,
+    codigos: list[str],
+    nomes: dict[str, str],
+    acumulado: bool,
+    altura: int = 400,
+):
+    """Linhas das janelas móveis. codigos[0] é a série principal."""
+    fig = go.Figure()
+    sufixo_coluna = "_acumulado" if acumulado else ""
+    series = []
+    for posicao, codigo in reversed(list(enumerate(codigos))):
+        series.append(
+            (
+                nomes[codigo],
+                analise[f"{codigo}{sufixo_coluna}"] * 100,
+                LAMINA_CORES[posicao % len(LAMINA_CORES)],
+                codigo in LAMINA_TRACEJADAS,
+                posicao == 0,
+            )
+        )
+    _adicionar_linhas(fig, analise["data_final"], series)
+    _layout_lamina(fig, altura)
+    if acumulado:
+        fig.update_yaxes(rangemode="tozero")
+    return fig
+
+
+def criar_grafico_lamina_periodo(
+    periodo: pd.DataFrame,
+    codigos: list[str],
+    nomes: dict[str, str],
+    altura: int = 400,
+):
+    fig = go.Figure()
+    series = [
+        (
+            nomes[codigo],
+            periodo[f"normalizado_{codigo}"],
+            LAMINA_CORES[posicao % len(LAMINA_CORES)],
+            codigo in LAMINA_TRACEJADAS,
+            posicao == 0,
+        )
+        for posicao, codigo in reversed(list(enumerate(codigos)))
+    ]
+    _adicionar_linhas(fig, periodo["data"], series)
+    _layout_lamina(fig, altura, sufixo="")
+    return fig
+
+
+def criar_grafico_lamina_calendario(
+    linhas: list[dict],
+    principal: str,
+    comparativa: str,
+    nomes: dict[str, str],
+    altura: int = 420,
+):
+    rotulos = [linha["label"] for linha in linhas]
+    valores_p = [linha["values"][principal] * 100 for linha in linhas]
+    valores_c = [linha["values"][comparativa] * 100 for linha in linhas]
+    diferencas = [p - c for p, c in zip(valores_p, valores_c)]
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=rotulos,
+            y=valores_p,
+            name=nomes[principal],
+            marker_color=LAMINA_CORES[0],
+            text=[f"{v:.0f}%" for v in valores_p],
+            textposition="outside",
+            textfont={"color": LAMINA_CORES_VALOR[0], "size": 13, "family": LAMINA_FONTE},
+            hovertemplate=f"<b>{escape(nomes[principal])}</b>: %{{y:.2f}}%<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Bar(
+            x=rotulos,
+            y=valores_c,
+            name=nomes[comparativa],
+            marker_color=LAMINA_CORES[1],
+            text=[f"{v:.0f}%" for v in valores_c],
+            textposition="outside",
+            textfont={"color": "#4B5563", "size": 13, "family": LAMINA_FONTE},
+            hovertemplate=f"<b>{escape(nomes[comparativa])}</b>: %{{y:.2f}}%<extra></extra>",
+        )
+    )
+    for rotulo, diferenca in zip(rotulos, diferencas):
+        positivo = diferenca >= 0
+        fig.add_annotation(
+            x=rotulo,
+            y=0,
+            yref="paper",
+            yshift=-58,
+            text=f"<b>{'+' if positivo else '−'}{abs(diferenca):.0f}</b>",
+            showarrow=False,
+            font={"color": "#1E7B46" if positivo else "#B4000A", "size": 13, "family": LAMINA_FONTE},
+            bgcolor="#E3F1E7" if positivo else "#FBE4E4",
+            borderpad=4,
+        )
+    _layout_lamina(fig, altura)
+    fig.update_layout(
+        barmode="group",
+        bargap=0.22,
+        bargroupgap=0.08,
+        hovermode="x unified",
+        margin={"l": 8, "r": 8, "t": 24, "b": 78},
+        uniformtext={"minsize": 9, "mode": "hide"},
+    )
+    fig.update_xaxes(
+        type="category",
+        tickmode="array",
+        tickvals=rotulos,
+        nticks=None,
+        tickfont={"color": "#1F2329", "size": 12.5},
+        ticklabelstandoff=8,
+    )
+    fig.update_yaxes(rangemode="tozero", griddash="dot")
+    return fig
+
+
+def calcular_janelas_calendario(
+    indices: pd.DataFrame,
+    codigos: list[str],
+    prazo_anos: int,
+    historico_anos: int,
+) -> list[dict]:
+    """Janelas de dezembro a dezembro (ex.: 2011–15 = dez/2010 a dez/2015)."""
+    base = indices.drop_duplicates("mes", keep="last").set_index("mes")
+    meses = list(base.index)
+    if not meses:
+        return []
+    ultimo_dezembro = max((mes for mes in meses if mes.month == 12), default=None)
+    if ultimo_dezembro is None:
+        return []
+    linhas = []
+    for fim in meses:
+        if fim.month != 12 or fim.year <= ultimo_dezembro.year - historico_anos:
+            continue
+        inicio = fim - prazo_anos * 12
+        if inicio not in base.index:
+            continue
+        valores = {
+            codigo: float(
+                base.loc[fim, COLUNAS_INDICES[codigo]]
+                / base.loc[inicio, COLUNAS_INDICES[codigo]]
+                - 1
+            )
+            for codigo in codigos
+        }
+        componentes = {}
+        if codigos and codigos[0] == "sp500_ipca":
+            inflacao = float(base.loc[fim, "indice_inflacao"] / base.loc[inicio, "indice_inflacao"] - 1)
+            componentes = {
+                "sp500_componente": (1 + valores["sp500_ipca"]) / (1 + inflacao) - 1,
+                "ipca_componente": inflacao,
+            }
+        ano_inicial = fim.year - prazo_anos + 1
+        if prazo_anos == 1:
+            rotulo, rotulo_longo = str(fim.year), str(fim.year)
+        else:
+            rotulo = f"{ano_inicial}–{fim.year % 100:02d}"
+            rotulo_longo = f"{ano_inicial}–{fim.year}"
+        linhas.append(
+            {
+                "label": rotulo,
+                "labelLong": rotulo_longo,
+                "startYear": ano_inicial,
+                "endYear": fim.year,
+                "values": valores,
+                "components": componentes,
+            }
+        )
+    return linhas
 
 
 def calcular_desempenho_periodo(
@@ -4893,84 +5088,6 @@ def calcular_desempenho_periodo(
         }
 
     return periodo, resultados, meses
-
-
-def criar_grafico_periodo(
-    periodo: pd.DataFrame,
-    series_escolhidas: list[str],
-    nomes: dict[str, str],
-):
-    cores = {
-        "cdi": "#174A7E",
-        "ipca": "#1B7F5A",
-        "prefixado": "#C43D3D",
-        "sp500": "#7A4EAB",
-        "sp500_brl": "#008C95",
-        "sp500_ipca": "#D47A22",
-        "referencia": "#555555",
-    }
-    estilos = {"prefixado": "dash", "referencia": "dot"}
-    fig = go.Figure()
-
-    for codigo in series_escolhidas:
-        rotulo_legenda = abreviar_rotulo_serie(nomes[codigo], 30)
-        fig.add_trace(
-            go.Scatter(
-                x=periodo["data"],
-                y=periodo[f"normalizado_{codigo}"],
-                mode="lines",
-                name=rotulo_legenda,
-                line={
-                    "color": cores[codigo],
-                    "width": 2.5,
-                    "dash": estilos.get(codigo, "solid"),
-                },
-                hovertemplate=(
-                    f"<b>{nomes[codigo]}</b><br>"
-                    "%{x|%m/%Y}<br>Valor do índice: %{y:.2f}<extra></extra>"
-                ),
-            )
-        )
-
-    fig.update_layout(
-        title={
-            "text": "Evolução no período - índices iniciados em 100",
-            "x": 0,
-            "xanchor": "left",
-            "font": {"size": 22},
-        },
-        autosize=False,
-        width=1100,
-        height=480,
-        margin={"l": 25, "r": 20, "t": 75, "b": 110},
-        hovermode="x unified",
-        dragmode=False,
-        legend={
-            "orientation": "h",
-            "yanchor": "top",
-            "y": -0.16,
-            "xanchor": "center",
-            "x": 0.5,
-            "entrywidth": 190,
-            "entrywidthmode": "pixels",
-        },
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-    )
-    fig.update_xaxes(
-        title_text="Mês",
-        showgrid=False,
-        tickformat="%m/%Y",
-        automargin=True,
-        fixedrange=True,
-    )
-    fig.update_yaxes(
-        title_text="Índice (início = 100)",
-        gridcolor="#E2E2E2",
-        automargin=True,
-        fixedrange=True,
-    )
-    return fig
 
 
 def criar_tabela_estatisticas(
@@ -5065,107 +5182,118 @@ def formatar_percentual(valor: float, casas: int = 1) -> str:
     return f"{valor:.{casas}%}".replace(".", ",")
 
 
+def formatar_frequencia(vitorias: int, total: int) -> str:
+    return "100%" if vitorias == total else formatar_percentual(vitorias / total)
+
+
+MESES_POR_EXTENSO = [
+    "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+]
+MESES_ABREVIADOS = [
+    "jan", "fev", "mar", "abr", "mai", "jun",
+    "jul", "ago", "set", "out", "nov", "dez",
+]
+
+
 def montar_dados_apresentacao(
     analise: pd.DataFrame,
     periodo: pd.DataFrame,
     resultados_periodo: dict,
     rotulo_periodo: str,
-    serie_principal: str,
-    series_comparativas: list[str],
     series_escolhidas: list[str],
     nomes: dict[str, str],
+    curtos: dict[str, str],
     prazo_anos: int,
     historico_anos: int,
+    calendario: list[dict],
+    marca: str,
 ) -> dict:
-    passo = max(1, len(analise) // 60)
-    amostra = analise.iloc[::passo].copy()
-    if amostra.index[-1] != analise.index[-1]:
-        amostra = pd.concat([amostra, analise.iloc[[-1]]])
-    passo_periodo = max(1, len(periodo) // 60)
-    amostra_periodo = periodo.iloc[::passo_periodo].copy()
-    if amostra_periodo.index[-1] != periodo.index[-1]:
-        amostra_periodo = pd.concat([amostra_periodo, periodo.iloc[[-1]]])
-
-    meses = [
-        "janeiro", "fevereiro", "março", "abril", "maio", "junho",
-        "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
-    ]
+    """Dados das lâminas do PDF (presentation_runtime/laminas_indices.py)."""
+    principal = series_escolhidas[0]
+    ultima = analise["data_final"].max()
     hoje = date.today()
+    total = len(analise)
 
     comparacoes = []
-    for comparativa in series_comparativas:
-        vitorias = int((analise[serie_principal] > analise[comparativa]).sum())
-        total_janelas = len(analise)
-        frequencia = vitorias / total_janelas if total_janelas else 0
-        comparacoes.append({
-            "value": formatar_percentual(frequencia),
-            "label": (
-                f"{abreviar_rotulo_serie(nomes[serie_principal], 24)} venceu "
-                f"{abreviar_rotulo_serie(nomes[comparativa], 24)} "
-                f"em {vitorias} de {total_janelas} janelas"
-            ),
-        })
+    for comparativa in series_escolhidas[1:]:
+        vitorias = int((analise[principal] > analise[comparativa]).sum())
+        comparacoes.append({"code": comparativa, "wins": vitorias, "total": total})
 
-    estatisticas = []
+    estatisticas = {}
     for codigo in series_escolhidas:
-        serie = analise[codigo]
-        estatisticas.append({
-            "name": abreviar_rotulo_serie(nomes[codigo], 42),
-            "periodReturn": formatar_percentual(
-                resultados_periodo[codigo]["acumulado"]
-            ),
-            "periodAnnual": formatar_percentual(
-                resultados_periodo[codigo]["anualizado"]
-            ),
-            "worst": formatar_percentual(serie.min()),
-            "median": formatar_percentual(serie.median()),
-            "best": formatar_percentual(serie.max()),
-        })
+        anual = analise[codigo]
+        acumulado = analise[f"{codigo}_acumulado"]
+        estatisticas[codigo] = {
+            "worst": float(anual.min()),
+            "median": float(anual.median()),
+            "best": float(anual.max()),
+            "worstAcc": float(acumulado.min()),
+            "medianAcc": float(acumulado.median()),
+            "bestAcc": float(acumulado.max()),
+            "period": float(resultados_periodo[codigo]["acumulado"]),
+            "periodAnnual": float(resultados_periodo[codigo]["anualizado"]),
+        }
 
+    componentes = []
+    if principal == "sp500_ipca":
+        componentes = [
+            {"code": "sp500_componente", "name": "S&P 500"},
+            {"code": "ipca_componente", "name": "IPCA"},
+        ]
+
+    categorias = [data.strftime("%m/%Y") for data in analise["data_final"]]
     return {
         "reportType": "indices",
-        "reportVersion": "indices-v5-pdf-janelas-primeira-pagina",
-        "generatedAt": f"{meses[hoje.month - 1].capitalize()} de {hoje.year}",
-        "summaryTitle": f"{nomes[serie_principal]} em perspectiva histórica",
-        "summarySubtitle": (
-            f"Comparação em janelas mensais de {prazo_anos} anos, com "
-            f"{historico_anos} anos de histórico exibido."
-        ),
+        "reportVersion": "indices-v6-laminas",
+        "brand": marca,
+        "documentTitle": f"{nomes[principal]} em janelas móveis",
+        "generatedAt": f"{MESES_POR_EXTENSO[hoje.month - 1].capitalize()} de {hoje.year}",
+        "asOf": f"{MESES_POR_EXTENSO[ultima.month - 1]} de {ultima.year}",
+        "asOfShort": f"{MESES_ABREVIADOS[ultima.month - 1]}/{ultima.year}",
+        "windowYears": prazo_anos,
+        "historyYears": historico_anos,
+        "totalWindows": total,
+        "hasSP500": any(codigo.startswith("sp500") for codigo in series_escolhidas),
+        "series": [
+            {
+                "code": codigo,
+                "name": nomes[codigo],
+                "short": curtos[codigo],
+                "dashed": codigo in LAMINA_TRACEJADAS,
+                "feminine": codigo == "referencia",
+            }
+            for codigo in series_escolhidas
+        ],
         "comparisons": comparacoes,
-        "chartTitle": "O retorno anualizado variou ao longo do tempo",
-        "chart": {
-            "categories": [data.strftime("%m/%Y") for data in amostra["data_final"]],
-            "series": [
-                {
-                    "name": abreviar_rotulo_serie(nomes[codigo], 30),
-                    "values": [float(valor) for valor in amostra[codigo]],
-                    "dashed": codigo in {"prefixado", "referencia"},
-                }
-                for codigo in series_escolhidas
-            ],
+        "stats": estatisticas,
+        "annualChart": {
+            "categories": categorias,
+            "values": {c: [float(v) for v in analise[c]] for c in series_escolhidas},
+        },
+        "accumChart": {
+            "categories": categorias,
+            "values": {
+                c: [float(v) for v in analise[f"{c}_acumulado"]] for c in series_escolhidas
+            },
         },
         "periodLabel": rotulo_periodo,
+        "periodRange": f"{periodo['data'].min():%m/%Y} a {periodo['data'].max():%m/%Y}",
         "periodChart": {
-            "categories": [
-                data.strftime("%m/%Y") for data in amostra_periodo["data"]
-            ],
-            "series": [
-                {
-                    "name": abreviar_rotulo_serie(nomes[codigo], 30),
-                    "values": [
-                        float(valor)
-                        for valor in amostra_periodo[f"normalizado_{codigo}"]
-                    ],
-                    "dashed": codigo in {"prefixado", "referencia"},
-                }
-                for codigo in series_escolhidas
-            ],
+            "categories": [data.strftime("%m/%Y") for data in periodo["data"]],
+            "values": {
+                c: [float(v) for v in periodo[f"normalizado_{c}"]] for c in series_escolhidas
+            },
         },
-        "statistics": estatisticas,
-        "parameters": {
-            "windowYears": prazo_anos,
-            "historyYears": historico_anos,
-        },
+        "calendar": (
+            {
+                "comparative": series_escolhidas[1],
+                "components": componentes,
+                "rows": calendario,
+            }
+            if calendario and len(series_escolhidas) > 1
+            else None
+        ),
     }
 
 
@@ -5174,16 +5302,120 @@ def gerar_pdf(dados_json: str) -> bytes:
     return gerar_pdf_relatorio(dados_json)
 
 
+def estilo_laminas():
+    st.markdown(
+        """
+        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
+        <style>
+        [class*="st-key-lamina_"] {
+            background: #F6F5F2;
+            border: 1px solid #E8E6E1;
+            border-radius: 20px;
+            padding: 26px 30px 18px;
+            gap: .35rem;
+            font-family: "DM Sans", Inter, "Segoe UI", Arial, sans-serif;
+        }
+        [class*="st-key-lamina_"] [data-testid="stHorizontalBlock"] { gap: 1.6rem; }
+        .lam-eyebrow {
+            color: #EC0000; font-weight: 600; font-size: 13px;
+            letter-spacing: .17em; text-transform: uppercase; margin: 0;
+        }
+        .lam-titulo {
+            color: #1F2329; font-weight: 700; font-size: clamp(22px, 2.35vw, 34px);
+            line-height: 1.12; letter-spacing: -.01em; margin: .25rem 0 .55rem;
+        }
+        .lam-legenda { display: flex; flex-wrap: wrap; gap: 6px 26px; align-items: center;
+            font-size: 15px; color: #1F2329; margin-bottom: .2rem; }
+        .lam-legenda span { display: inline-flex; align-items: center; gap: 9px; }
+        .lam-legenda i { display: inline-block; width: 26px; height: 0; border-top: 4px solid; border-radius: 3px; }
+        .lam-legenda i.tracejada { border-top-style: dashed; }
+        .lam-legenda em { font-style: normal; color: #6B7280; }
+        .lam-painel { width: 100%; margin-top: .4rem; }
+        [class*="st-key-lamina_"] .lam-titulo, [class*="st-key-lamina_"] .lam-eyebrow,
+        [class*="st-key-lamina_"] .lam-legenda, [class*="st-key-lamina_"] .lam-painel,
+        [class*="st-key-lamina_"] .lam-card, [class*="st-key-lamina_"] .lam-mini,
+        [class*="st-key-lamina_"] .lam-rodape {
+            font-family: "DM Sans", Inter, "Segoe UI", Arial, sans-serif;
+        }
+        .lam-painel .cab { display: grid; grid-template-columns: minmax(0, 1fr) auto 66px; column-gap: 10px;
+            font-size: 13px; font-weight: 700; text-align: right; padding: 0 16px 6px; }
+        .lam-painel .tabela { background: #fff; border: 1px solid #E8E6E1; border-radius: 14px; overflow: hidden; }
+        .lam-painel .linha { display: grid; grid-template-columns: minmax(0, 1fr) auto 66px; column-gap: 10px; align-items: center;
+            padding: 0 16px; height: 62px; }
+        .lam-painel .linha:nth-child(even) { background: #F6F5F2; }
+        .lam-painel .rot { color: #1F2329; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .lam-painel .vp { color: #B4000A; font-weight: 700; font-size: 21px; text-align: right; }
+        .lam-painel .vc { color: #6B7280; font-weight: 500; font-size: 18px; text-align: right; }
+        .lam-card { background: #fff; border: 1px solid #E8E6E1; border-radius: 14px;
+            border-top: 6px solid #EC0000; padding: 14px 20px 14px; margin-bottom: 12px; }
+        .lam-card b { display: block; font-size: 40px; line-height: 1.05; color: #1F2329; letter-spacing: -.01em; }
+        .lam-card.destaque b { color: #EC0000; }
+        .lam-card span { color: #6B7280; font-size: 15px; }
+        .lam-mini { background: #fff; border: 1px solid #E8E6E1; border-radius: 14px; padding: 12px 18px 6px; }
+        .lam-mini table { width: 100%; border-collapse: collapse; font-size: 15px; border: 0; margin: 0; }
+        .lam-mini th, .lam-mini td { border-left: 0 !important; border-right: 0 !important; background: transparent; }
+        .lam-mini th { font-size: 11.5px; font-weight: 700; text-align: right; padding: 4px 0 8px;
+            border-bottom: 1.5px solid #1F2329; }
+        .lam-mini th:first-child { text-align: left; color: #9CA3AF; letter-spacing: .12em; font-weight: 600; }
+        .lam-mini td { padding: 9px 0; border-top: 1px solid #EEECE7; text-align: right; font-weight: 700; }
+        .lam-mini tr:first-child td { border-top: 0; }
+        .lam-mini td:first-child { text-align: left; font-weight: 400; color: #1F2329; }
+        .lam-rodape { color: #6B7280; font-size: 13px; margin-top: .3rem; }
+        .lam-rodape b { color: #1F2329; font-weight: 600; }
+        [class*="st-key-lamina_"] [data-testid="stTabs"] button p { font-size: 14px; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def html_legenda(codigos, nomes, extra=""):
+    itens = "".join(
+        f'<span><i class="{"tracejada" if codigo in LAMINA_TRACEJADAS else ""}" '
+        f'style="border-color:{LAMINA_CORES[posicao % len(LAMINA_CORES)]}"></i>'
+        f"{escape(nomes[codigo])}</span>"
+        for posicao, codigo in enumerate(codigos)
+    )
+    if extra:
+        itens += f"<em>{escape(extra)}</em>"
+    return f'<div class="lam-legenda">{itens}</div>'
+
+
+def html_cabecalho_lamina(eyebrow, titulo):
+    return (
+        f'<p class="lam-eyebrow">{escape(eyebrow)}</p>'
+        f'<div class="lam-titulo">{escape(titulo)}</div>'
+    )
+
+
+def html_rodape_lamina(texto):
+    return (
+        f'<div class="lam-rodape">{escape(texto)} '
+        "<b>Rentabilidade passada não é garantia de rentabilidade futura.</b></div>"
+    )
+
+
+def texto_janela(prazo_anos):
+    return f"{prazo_anos} {'ano' if prazo_anos == 1 else 'anos'}"
+
+
+CONFIG_GRAFICO_LAMINA = {
+    "displaylogo": False,
+    "displayModeBar": False,
+    "scrollZoom": False,
+}
+
+
 cabecalho_contextual("Análise de índices")
+estilo_laminas()
 st.title("Análise de índices")
 st.caption(
-    "Compare diferentes referências em janelas móveis mensais. Cada mês "
-    "representa uma janela encerrada naquela data; você pode visualizar a "
-    "taxa anualizada ou o retorno total acumulado, ambos em linhas."
+    "Compare referências em janelas móveis mensais. Cada mês representa uma "
+    "janela encerrada naquela data. O PDF no fim da página reproduz estas "
+    "mesmas lâminas."
 )
 
-with st.container(border=True):
-    st.markdown("#### Por que olhar janelas móveis?")
+with st.expander("Por que olhar janelas móveis?"):
     st.write(
         "Uma rentabilidade calculada entre apenas duas datas é uma fotografia: "
         "ela pode parecer muito boa ou ruim por causa do momento escolhido. "
@@ -5205,7 +5437,7 @@ with st.sidebar:
         "prefixado": "Taxa prefixada",
         "sp500": "S&P 500 (USD, preço)",
         "sp500_brl": "S&P 500 (BRL, preço)",
-        "sp500_ipca": "IPCA + S&P 500 (USD)",
+        "sp500_ipca": "S&P 500 + IPCA",
     }
     codigos = list(rotulos_selecao)
 
@@ -5241,7 +5473,7 @@ with st.sidebar:
     st.markdown("##### Participação de cada índice")
     st.caption(
         "A participação é independente em cada lado da comparação e multiplica "
-        "os retornos mensais. Em IPCA + S&P, ela se aplica apenas ao S&P."
+        "os retornos mensais. Em S&P 500 + IPCA, ela se aplica apenas ao S&P."
     )
     for codigo in selecoes:
         participacoes[codigo] = st.number_input(
@@ -5267,7 +5499,24 @@ with st.sidebar:
 
     prazo_anos = st.selectbox("Prazo da janela", [1, 3, 5, 10], index=2)
     historico_anos = st.selectbox("Histórico exibido", [5, 10, 15, 20], index=2)
-    nomes = nomes_series(
+
+    opcoes_periodo = {
+        "Últimos 6 meses": 6,
+        "Últimos 12 meses": 12,
+        "Últimos 2 anos": 24,
+        "Últimos 3 anos": 36,
+        "Últimos 4 anos": 48,
+        "Últimos 5 anos": 60,
+        "Últimos 10 anos": 120,
+        "Período personalizado": None,
+    }
+    periodo_escolhido = st.selectbox(
+        "Período de desempenho",
+        list(opcoes_periodo),
+        index=5,
+        help="Usado na linha do painel lateral e na lâmina de desempenho no período.",
+    )
+    nomes, nomes_curtos = rotulos_lamina(
         taxa_ipca,
         taxa_prefixada,
         taxa_referencia,
@@ -5312,141 +5561,34 @@ try:
         )
 
     series_escolhidas = [serie_principal] + series_comparativas_finais
+    total_janelas = len(analise)
+    if total_janelas == 0:
+        st.warning("Não há janelas suficientes para o prazo e o histórico escolhidos.")
+        st.stop()
 
-    st.subheader("Frequência histórica")
-    colunas = st.columns(len(series_comparativas_finais))
-    for coluna, comparativa in zip(colunas, series_comparativas_finais):
-        vitorias = int((analise[serie_principal] > analise[comparativa]).sum())
-        total_janelas = len(analise)
-        frequencia = vitorias / total_janelas if total_janelas else 0
-        principal_curto = abreviar_rotulo_serie(nomes[serie_principal], 24)
-        comparativa_curta = abreviar_rotulo_serie(nomes[comparativa], 24)
-        coluna.metric(
-            f"{principal_curto} venceu {comparativa_curta}",
-            f"{frequencia:.1%}",
-            f"{vitorias} de {total_janelas} janelas",
-            delta_color="off",
-            help=(
-                f"{nomes[serie_principal]} venceu {nomes[comparativa]} "
-                f"em {vitorias} das {total_janelas} janelas históricas."
-            ),
-        )
-
-    visualizacao_janelas = st.radio(
-        "Visualização das janelas móveis",
-        ["Anualizado em linhas", "Acumulado em linhas"],
-        horizontal=True,
-        key="visualizacao_janelas_indices",
-    )
-    if visualizacao_janelas == "Acumulado em linhas":
-        st.caption(
-            "Cada ponto representa o retorno total da janela encerrada naquele mês, "
-            "sem transformar o resultado em uma taxa anual."
-        )
-
-    st.plotly_chart(
-        criar_grafico(
-            analise,
-            series_escolhidas,
-            nomes,
-            prazo_anos,
-            visualizacao_janelas,
-        ),
-        width=1100,
-        config={
-            "responsive": False,
-            "displaylogo": False,
-            "displayModeBar": False,
-            "scrollZoom": False,
-        },
-    )
-    st.caption(
-        f"Análise de {len(analise)} janelas mensais sobrepostas, de "
-        f"{analise['data_final'].min():%m/%Y} a {analise['data_final'].max():%m/%Y}. "
-        "Retornos brutos, sem impostos, taxas ou custos."
-    )
-
-    st.subheader("Melhores e piores janelas")
-    st.caption(
-        "Escolha a leitura desejada. As datas indicam o mês de encerramento "
-        "de cada janela."
-    )
-    visualizacao_tabelas = st.radio(
-        "Visualização das tabelas",
-        ["Anualizado", "Acumulado", "Ambos"],
-        horizontal=True,
-        key="visualizacao_tabelas_indices",
-    )
-
-    if visualizacao_tabelas == "Ambos":
-        coluna_anualizada, coluna_acumulada = st.columns(2, gap="medium")
-        with coluna_anualizada:
-            exibir_tabela_estatisticas(
-                analise,
-                series_escolhidas,
-                nomes,
-                prazo_anos,
-                acumulado=False,
-                compacta=True,
-            )
-        with coluna_acumulada:
-            exibir_tabela_estatisticas(
-                analise,
-                series_escolhidas,
-                nomes,
-                prazo_anos,
-                acumulado=True,
-                compacta=True,
-            )
-    else:
-        exibir_tabela_estatisticas(
-            analise,
-            series_escolhidas,
-            nomes,
-            prazo_anos,
-            acumulado=visualizacao_tabelas == "Acumulado",
-        )
-
-    st.subheader("Desempenho no período")
-    st.caption(
-        "Escolha um intervalo para comparar a evolução e o retorno acumulado "
-        "das referências selecionadas."
-    )
-    opcoes_periodo = {
-        "Últimos 6 meses": 6,
-        "Últimos 12 meses": 12,
-        "Últimos 2 anos": 24,
-        "Últimos 3 anos": 36,
-        "Últimos 4 anos": 48,
-        "Últimos 5 anos": 60,
-        "Últimos 10 anos": 120,
-        "Período personalizado": None,
-    }
-    periodo_escolhido = st.selectbox(
-        "Período de desempenho",
-        list(opcoes_periodo),
-        index=5,
-    )
+    # ---------------------------------------------------- período escolhido
     ultima_data_disponivel = indices["data"].max()
     primeira_data_disponivel = indices["data"].min()
-
     if opcoes_periodo[periodo_escolhido] is None:
-        coluna_inicio, coluna_fim = st.columns(2)
-        data_inicial_periodo = coluna_inicio.date_input(
-            "Data inicial",
-            value=max(
-                primeira_data_disponivel.date(),
-                (ultima_data_disponivel - pd.DateOffset(years=5)).date(),
-            ),
-            min_value=primeira_data_disponivel.date(),
-            max_value=ultima_data_disponivel.date(),
-        )
-        data_final_periodo = coluna_fim.date_input(
-            "Data final",
-            value=ultima_data_disponivel.date(),
-            min_value=primeira_data_disponivel.date(),
-            max_value=ultima_data_disponivel.date(),
-        )
+        with st.sidebar:
+            coluna_inicio, coluna_fim = st.columns(2)
+            data_inicial_periodo = coluna_inicio.date_input(
+                "Data inicial",
+                value=max(
+                    primeira_data_disponivel.date(),
+                    (ultima_data_disponivel - pd.DateOffset(years=5)).date(),
+                ),
+                min_value=primeira_data_disponivel.date(),
+                max_value=ultima_data_disponivel.date(),
+                format="DD/MM/YYYY",
+            )
+            data_final_periodo = coluna_fim.date_input(
+                "Data final",
+                value=ultima_data_disponivel.date(),
+                min_value=primeira_data_disponivel.date(),
+                max_value=ultima_data_disponivel.date(),
+                format="DD/MM/YYYY",
+            )
         rotulo_periodo = (
             f"{pd.Timestamp(data_inicial_periodo):%m/%Y} a "
             f"{pd.Timestamp(data_final_periodo):%m/%Y}"
@@ -5469,49 +5611,324 @@ try:
         data_inicial_periodo,
         data_final_periodo,
     )
+    ultima_janela = analise["data_final"].max()
+    ate_texto = f"{MESES_POR_EXTENSO[ultima_janela.month - 1]} de {ultima_janela.year}"
+    nome_principal = nomes[serie_principal]
 
-    colunas_periodo = st.columns(len(series_escolhidas))
-    for coluna, codigo in zip(colunas_periodo, series_escolhidas):
-        resultado = resultados_periodo[codigo]
-        coluna.metric(
-            nomes[codigo],
-            f"{resultado['acumulado']:.1%}",
-            f"Equivalente anual: {resultado['anualizado']:.2%} a.a.",
-            delta_color="off",
+    # ---------------------------------------------- lâmina 1: anualizado
+    with st.container(key="lamina_anualizada"):
+        if len(series_comparativas_finais) > 1:
+            abas = st.tabs([f"vs {nomes_curtos[c]}" for c in series_comparativas_finais])
+        else:
+            abas = [st.container()]
+        for aba, comparativa in zip(abas, series_comparativas_finais):
+            with aba:
+                vitorias = int((analise[serie_principal] > analise[comparativa]).sum())
+                titulo = (
+                    f"{nome_principal} bateu {com_artigo(comparativa, nomes[comparativa])} "
+                    f"em {vitorias} de {total_janelas} janelas"
+                )
+                if vitorias != total_janelas:
+                    titulo += f" ({formatar_percentual(vitorias / total_janelas)})"
+                st.markdown(
+                    html_cabecalho_lamina(f"Janelas móveis de {texto_janela(prazo_anos)}", titulo),
+                    unsafe_allow_html=True,
+                )
+                coluna_grafico, coluna_painel = st.columns([2.05, 1], vertical_alignment="top")
+                with coluna_grafico:
+                    st.markdown(
+                        html_legenda(
+                            [serie_principal, comparativa],
+                            nomes,
+                            f"Retorno anualizado em cada janela de {texto_janela(prazo_anos)}",
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                    st.plotly_chart(
+                        criar_grafico_lamina_janelas(
+                            analise, [serie_principal, comparativa], nomes, acumulado=False
+                        ),
+                        width="stretch",
+                        config=CONFIG_GRAFICO_LAMINA,
+                        key=f"grafico_anual_{comparativa}",
+                    )
+                with coluna_painel:
+                    serie_p, serie_c = analise[serie_principal], analise[comparativa]
+                    res_p = resultados_periodo[serie_principal]
+                    res_c = resultados_periodo[comparativa]
+                    linhas_painel = [
+                        (rotulo_periodo, res_p["acumulado"], res_c["acumulado"]),
+                        ("Anualizado", res_p["anualizado"], res_c["anualizado"]),
+                        ("Pior janela", serie_p.min(), serie_c.min()),
+                        ("Mediana", serie_p.median(), serie_c.median()),
+                        ("Melhor janela", serie_p.max(), serie_c.max()),
+                    ]
+                    corpo = "".join(
+                        f'<div class="linha"><span class="rot">{escape(rotulo)}</span>'
+                        f'<span class="vp">{formatar_percentual(vp)}</span>'
+                        f'<span class="vc">{formatar_percentual(vc)}</span></div>'
+                        for rotulo, vp, vc in linhas_painel
+                    )
+                    st.markdown(
+                        f'<div class="lam-painel"><div class="cab">'
+                        f'<span></span><span style="color:#B4000A">{escape(nomes_curtos[serie_principal])}</span>'
+                        f'<span style="color:#9CA3AF">{escape(nomes_curtos[comparativa])}</span></div>'
+                        f'<div class="tabela">{corpo}</div></div>',
+                        unsafe_allow_html=True,
+                    )
+                st.markdown(
+                    html_rodape_lamina(f"Retornos brutos, até {ate_texto}."),
+                    unsafe_allow_html=True,
+                )
+
+    # ---------------------------------------------- lâmina 2: acumulado
+    with st.container(key="lamina_acumulada"):
+        primeira = series_comparativas_finais[0]
+        vitorias_primeira = int(
+            (analise[f"{serie_principal}_acumulado"] > analise[f"{primeira}_acumulado"]).sum()
+        )
+        if vitorias_primeira == total_janelas:
+            titulo = (
+                f"Em qualquer mês de entrada, {nome_principal} superou "
+                f"{com_artigo(primeira, nomes[primeira])}"
+            )
+        else:
+            titulo = (
+                f"{nome_principal} superou {com_artigo(primeira, nomes[primeira])} em "
+                f"{vitorias_primeira} de {total_janelas} meses de entrada"
+            )
+        st.markdown(
+            html_cabecalho_lamina(
+                f"Retorno acumulado · Janelas móveis de {texto_janela(prazo_anos)} · "
+                f"{total_janelas} janelas",
+                titulo,
+            ),
+            unsafe_allow_html=True,
+        )
+        coluna_grafico, coluna_painel = st.columns([2.05, 1], vertical_alignment="top")
+        with coluna_grafico:
+            st.markdown(html_legenda(series_escolhidas, nomes), unsafe_allow_html=True)
+            st.plotly_chart(
+                criar_grafico_lamina_janelas(analise, series_escolhidas, nomes, acumulado=True),
+                width="stretch",
+                config=CONFIG_GRAFICO_LAMINA,
+                key="grafico_acumulado",
+            )
+        with coluna_painel:
+            cards = []
+            for posicao, comparativa in enumerate(series_comparativas_finais[:3]):
+                vitorias = int(
+                    (analise[f"{serie_principal}_acumulado"] > analise[f"{comparativa}_acumulado"]).sum()
+                )
+                legenda_card = (
+                    "janelas superaram " if posicao == 0 else "superaram "
+                ) + f"{com_artigo(comparativa, nomes[comparativa])} ({formatar_frequencia(vitorias, total_janelas)})"
+                cards.append(
+                    f'<div class="lam-card{" destaque" if posicao == 0 else ""}">'
+                    f"<b>{vitorias} de {total_janelas}</b><span>{escape(legenda_card)}</span></div>"
+                )
+            colunas_tabela = series_escolhidas[:4]
+            cabecalho = "".join(
+                f'<th style="color:{"#B4000A" if i == 0 else "#1F2329"}">{escape(nomes_curtos[c])}</th>'
+                for i, c in enumerate(colunas_tabela)
+            )
+            linhas_tabela = ""
+            for rotulo, funcao in [("Pior", "min"), ("Mediana", "median"), ("Melhor", "max")]:
+                celulas = "".join(
+                    f'<td style="color:{LAMINA_CORES_VALOR[i] if i != 1 else "#4B5563"}">'
+                    f"{formatar_percentual(getattr(analise[f'{c}_acumulado'], funcao)())}</td>"
+                    for i, c in enumerate(colunas_tabela)
+                )
+                linhas_tabela += f"<tr><td>{rotulo}</td>{celulas}</tr>"
+            st.markdown(
+                "".join(cards)
+                + f'<div class="lam-mini"><table><tr><th>EM {texto_janela(prazo_anos).upper()}</th>'
+                f"{cabecalho}</tr>{linhas_tabela}</table></div>",
+                unsafe_allow_html=True,
+            )
+        nota_sp = (
+            "S&P 500 em USD, índice de preço. "
+            if any(c.startswith("sp500") for c in series_escolhidas)
+            else ""
+        )
+        st.markdown(
+            html_rodape_lamina(
+                f"Fonte: Radar de Retorno, dados até {ate_texto}. {nota_sp}Retornos brutos e acumulados."
+            ),
+            unsafe_allow_html=True,
         )
 
-    st.plotly_chart(
-        criar_grafico_periodo(periodo, series_escolhidas, nomes),
-        width=1100,
-        config={
-            "responsive": False,
-            "displaylogo": False,
-            "displayModeBar": False,
-            "scrollZoom": False,
-        },
-    )
-    st.caption(
-        f"Período efetivamente utilizado: {periodo['data'].min():%m/%Y} a "
-        f"{periodo['data'].max():%m/%Y} ({meses_efetivos} meses). "
-        "Todos os índices começam em 100 para facilitar a comparação."
-    )
+    with st.expander("Tabela detalhada das janelas (com datas da pior e da melhor)"):
+        visualizacao_tabelas = st.radio(
+            "Visualização das tabelas",
+            ["Anualizado", "Acumulado", "Ambos"],
+            horizontal=True,
+            key="visualizacao_tabelas_indices",
+        )
+        if visualizacao_tabelas == "Ambos":
+            coluna_anualizada, coluna_acumulada = st.columns(2, gap="medium")
+            with coluna_anualizada:
+                exibir_tabela_estatisticas(
+                    analise, series_escolhidas, nomes, prazo_anos, acumulado=False, compacta=True
+                )
+            with coluna_acumulada:
+                exibir_tabela_estatisticas(
+                    analise, series_escolhidas, nomes, prazo_anos, acumulado=True, compacta=True
+                )
+        else:
+            exibir_tabela_estatisticas(
+                analise,
+                series_escolhidas,
+                nomes,
+                prazo_anos,
+                acumulado=visualizacao_tabelas == "Acumulado",
+            )
+        st.caption(
+            f"{total_janelas} janelas mensais sobrepostas, de "
+            f"{analise['data_final'].min():%m/%Y} a {analise['data_final'].max():%m/%Y}. "
+            "Retornos brutos, sem impostos, taxas ou custos."
+        )
 
-    st.subheader("Relatório para o cliente")
+    # ------------------------------------------- lâmina 3: ano-calendário
+    calendario = calcular_janelas_calendario(
+        indices, series_escolhidas, prazo_anos, historico_anos
+    )
+    if len(calendario) >= 2:
+        comparativa = series_comparativas_finais[0]
+        with st.container(key="lamina_calendario"):
+            venceu = sum(
+                1 for linha in calendario
+                if linha["values"][serie_principal] > linha["values"][comparativa]
+            )
+            if venceu == len(calendario):
+                titulo = (
+                    f"Superou {com_artigo(comparativa, nomes[comparativa])} em todas as "
+                    f"janelas de {texto_janela(prazo_anos)}"
+                )
+            else:
+                titulo = (
+                    f"Superou {com_artigo(comparativa, nomes[comparativa])} em {venceu} de "
+                    f"{len(calendario)} janelas de {texto_janela(prazo_anos)}"
+                )
+            st.markdown(
+                html_cabecalho_lamina(
+                    f"{nomes_curtos[serie_principal]} vs {nomes_curtos[comparativa]} · "
+                    f"Retornos acumulados · {calendario[0]['startYear']} a {calendario[-1]['endYear']}",
+                    titulo,
+                ),
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                html_legenda([serie_principal, comparativa], nomes, "Em verde, ganho sobre a comparada (p.p.)"),
+                unsafe_allow_html=True,
+            )
+            st.plotly_chart(
+                criar_grafico_lamina_calendario(calendario, serie_principal, comparativa, nomes),
+                width="stretch",
+                config=CONFIG_GRAFICO_LAMINA,
+                key="grafico_calendario",
+            )
+            with st.expander("Todas as janelas, lado a lado"):
+                tabela_calendario = []
+                for linha in calendario:
+                    registro = {"Período": linha["labelLong"]}
+                    if linha["components"]:
+                        registro["S&P 500"] = formatar_percentual(linha["components"]["sp500_componente"], 2)
+                        registro["IPCA"] = formatar_percentual(linha["components"]["ipca_componente"], 2)
+                    for codigo in series_escolhidas:
+                        registro[nomes_curtos[codigo]] = formatar_percentual(linha["values"][codigo], 2)
+                    diferenca = linha["values"][serie_principal] - linha["values"][comparativa]
+                    registro[f"Ganho s/ {nomes_curtos[comparativa]}"] = (
+                        f"{'+' if diferenca >= 0 else '−'}{abs(diferenca) * 100:.2f} p.p.".replace(".", ",")
+                    )
+                    tabela_calendario.append(registro)
+                st.dataframe(pd.DataFrame(tabela_calendario), hide_index=True, width="stretch")
+            st.markdown(
+                html_rodape_lamina(
+                    "Janelas de dezembro a dezembro (2011–15 = dez/2010 a dez/2015). "
+                    f"{nota_sp}Retornos brutos, sem impostos."
+                ),
+                unsafe_allow_html=True,
+            )
+
+    # --------------------------------------------- lâmina 4: período
+    with st.container(key="lamina_periodo"):
+        acumulado_principal = resultados_periodo[serie_principal]["acumulado"]
+        if rotulo_periodo.startswith("Últimos"):
+            titulo = (
+                f"{nome_principal} acumulou {formatar_percentual(acumulado_principal)} "
+                f"nos {rotulo_periodo[0].lower() + rotulo_periodo[1:]}"
+            )
+        else:
+            titulo = (
+                f"{nome_principal} acumulou {formatar_percentual(acumulado_principal)} "
+                f"de {rotulo_periodo}"
+            )
+        st.markdown(
+            html_cabecalho_lamina(f"Desempenho no período · {rotulo_periodo}", titulo),
+            unsafe_allow_html=True,
+        )
+        coluna_grafico, coluna_painel = st.columns([2.05, 1], vertical_alignment="top")
+        with coluna_grafico:
+            st.markdown(
+                html_legenda(series_escolhidas, nomes, "Base 100 no início do período"),
+                unsafe_allow_html=True,
+            )
+            st.plotly_chart(
+                criar_grafico_lamina_periodo(periodo, series_escolhidas, nomes),
+                width="stretch",
+                config=CONFIG_GRAFICO_LAMINA,
+                key="grafico_periodo",
+            )
+        with coluna_painel:
+            corpo = "".join(
+                f'<div class="linha"><span class="rot">'
+                f'<span style="color:{LAMINA_CORES[i % len(LAMINA_CORES)]}">●</span> '
+                f"{escape(nomes_curtos[c])}</span>"
+                f'<span class="vp" style="color:{"#B4000A" if i == 0 else "#1F2329"}">'
+                f'{formatar_percentual(resultados_periodo[c]["acumulado"])}</span>'
+                f'<span class="vc">{formatar_percentual(resultados_periodo[c]["anualizado"])}</span></div>'
+                for i, c in enumerate(series_escolhidas)
+            )
+            st.markdown(
+                '<div class="lam-painel"><div class="cab"><span></span>'
+                '<span style="color:#9CA3AF">Acumulado</span><span style="color:#9CA3AF">Ao ano</span></div>'
+                f'<div class="tabela">{corpo}</div></div>',
+                unsafe_allow_html=True,
+            )
+        st.markdown(
+            html_rodape_lamina(
+                f"Período efetivo: {periodo['data'].min():%m/%Y} a {periodo['data'].max():%m/%Y} "
+                f"({meses_efetivos} meses). Retornos brutos."
+            ),
+            unsafe_allow_html=True,
+        )
+
+    # --------------------------------------------------------- PDF
+    st.subheader("Lâminas em PDF para o cliente")
     st.caption(
-        "Gere um PDF com os filtros atuais, os principais resultados, o "
-        "gráfico, a tabela e as premissas metodológicas."
+        "O PDF sai em formato 16:9 com as mesmas lâminas desta página: uma lâmina "
+        "anualizada por comparação, a acumulada, as janelas por ano-calendário, o "
+        "desempenho no período e as premissas."
+    )
+    marca_pdf = st.radio(
+        "Marca nas lâminas",
+        ["Santander", "Radar de Retorno"],
+        horizontal=True,
+        key="marca_pdf_indices",
     )
     dados_apresentacao = montar_dados_apresentacao(
         analise,
         periodo,
         resultados_periodo,
         rotulo_periodo,
-        serie_principal,
-        series_comparativas_finais,
         series_escolhidas,
         nomes,
+        nomes_curtos,
         prazo_anos,
         historico_anos,
+        calendario,
+        "santander" if marca_pdf == "Santander" else "radar",
     )
     dados_json = json.dumps(dados_apresentacao, ensure_ascii=False, sort_keys=True)
 
@@ -5520,7 +5937,7 @@ try:
         st.session_state.pop("pdf_configuracao", None)
 
     if st.button("Preparar PDF", type="primary"):
-        with st.spinner("Montando o relatório em PDF..."):
+        with st.spinner("Montando as lâminas em PDF..."):
             st.session_state["pdf_radar"] = gerar_pdf(dados_json)
             st.session_state["pdf_configuracao"] = dados_json
 
@@ -5528,10 +5945,18 @@ try:
         st.session_state.get("pdf_radar")
         and st.session_state.get("pdf_configuracao") == dados_json
     ):
+        nome_arquivo = re.sub(
+            r"[^a-z0-9]+",
+            "-",
+            unicodedata.normalize("NFKD", f"radar {nomes_curtos[serie_principal]} {prazo_anos} anos")
+            .encode("ascii", "ignore")
+            .decode()
+            .lower(),
+        ).strip("-")
         st.download_button(
-            "Baixar relatório (.pdf)",
+            "Baixar lâminas (.pdf)",
             data=st.session_state["pdf_radar"],
-            file_name="radar-de-retorno.pdf",
+            file_name=f"{nome_arquivo}.pdf",
             mime="application/pdf",
             on_click="ignore",
         )

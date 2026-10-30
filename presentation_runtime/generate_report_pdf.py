@@ -5,6 +5,7 @@ from html import escape
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from renda_fixa_visual import comparar_com_carrego, cor_carrego
 
 from reportlab.lib import colors
@@ -663,6 +664,10 @@ if report_type == "fundos":
     render_funds()
 elif report_type == "renda_fixa":
     render_fixed_income()
+elif data.get("reportVersion", "").startswith("indices-v6"):
+    import laminas_indices
+
+    laminas_indices.render(c, data)
 else:
     render_indices()
 
