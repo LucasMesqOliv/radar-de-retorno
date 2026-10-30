@@ -5208,6 +5208,7 @@ def montar_dados_apresentacao(
     historico_anos: int,
     calendario: list[dict],
     marca: str,
+    selecao: dict | None = None,
 ) -> dict:
     """Dados das lâminas do PDF (presentation_runtime/laminas_indices.py)."""
     principal = series_escolhidas[0]
@@ -5247,6 +5248,7 @@ def montar_dados_apresentacao(
         "reportType": "indices",
         "reportVersion": "indices-v6-laminas",
         "brand": marca,
+        "include": selecao or {},
         "documentTitle": f"{nomes[principal]} em janelas móveis",
         "generatedAt": f"{MESES_POR_EXTENSO[hoje.month - 1].capitalize()} de {hoje.year}",
         "asOf": f"{MESES_POR_EXTENSO[ultima.month - 1]} de {ultima.year}",
@@ -5392,6 +5394,16 @@ def html_rodape_lamina(texto):
     return (
         f'<div class="lam-rodape">{escape(texto)} '
         "<b>Rentabilidade passada não é garantia de rentabilidade futura.</b></div>"
+    )
+
+
+def chave_pdf(chave: str) -> bool:
+    """Chave "Incluir no PDF" de cada lâmina; desligada, a lâmina fica recolhida."""
+    return st.toggle(
+        "Incluir no PDF",
+        value=True,
+        key=chave,
+        help="Desligue para recolher esta lâmina e deixá-la fora do PDF.",
     )
 
 
@@ -5614,6 +5626,12 @@ try:
     ultima_janela = analise["data_final"].max()
     ate_texto = f"{MESES_POR_EXTENSO[ultima_janela.month - 1]} de {ultima_janela.year}"
     nome_principal = nomes[serie_principal]
+    nota_sp = (
+        "S&P 500 em USD, índice de preço. "
+        if any(c.startswith("sp500") for c in series_escolhidas)
+        else ""
+    )
+    lamina_anual_incluida = {}
 
     # ---------------------------------------------- lâmina 1: anualizado
     with st.container(key="lamina_anualizada"):
@@ -5634,52 +5652,55 @@ try:
                     html_cabecalho_lamina(f"Janelas móveis de {texto_janela(prazo_anos)}", titulo),
                     unsafe_allow_html=True,
                 )
-                coluna_grafico, coluna_painel = st.columns([2.05, 1], vertical_alignment="top")
-                with coluna_grafico:
+                incluir_lamina = chave_pdf(f"pdf_anual_{comparativa}")
+                lamina_anual_incluida[comparativa] = incluir_lamina
+                if incluir_lamina:
+                    coluna_grafico, coluna_painel = st.columns([2.05, 1], vertical_alignment="top")
+                    with coluna_grafico:
+                        st.markdown(
+                            html_legenda(
+                                [serie_principal, comparativa],
+                                nomes,
+                                f"Retorno anualizado em cada janela de {texto_janela(prazo_anos)}",
+                            ),
+                            unsafe_allow_html=True,
+                        )
+                        st.plotly_chart(
+                            criar_grafico_lamina_janelas(
+                                analise, [serie_principal, comparativa], nomes, acumulado=False
+                            ),
+                            width="stretch",
+                            config=CONFIG_GRAFICO_LAMINA,
+                            key=f"grafico_anual_{comparativa}",
+                        )
+                    with coluna_painel:
+                        serie_p, serie_c = analise[serie_principal], analise[comparativa]
+                        res_p = resultados_periodo[serie_principal]
+                        res_c = resultados_periodo[comparativa]
+                        linhas_painel = [
+                            (rotulo_periodo, res_p["acumulado"], res_c["acumulado"]),
+                            ("Anualizado", res_p["anualizado"], res_c["anualizado"]),
+                            ("Pior janela", serie_p.min(), serie_c.min()),
+                            ("Mediana", serie_p.median(), serie_c.median()),
+                            ("Melhor janela", serie_p.max(), serie_c.max()),
+                        ]
+                        corpo = "".join(
+                            f'<div class="linha"><span class="rot">{escape(rotulo)}</span>'
+                            f'<span class="vp">{formatar_percentual(vp)}</span>'
+                            f'<span class="vc">{formatar_percentual(vc)}</span></div>'
+                            for rotulo, vp, vc in linhas_painel
+                        )
+                        st.markdown(
+                            f'<div class="lam-painel"><div class="cab">'
+                            f'<span></span><span style="color:#B4000A">{escape(nomes_curtos[serie_principal])}</span>'
+                            f'<span style="color:#9CA3AF">{escape(nomes_curtos[comparativa])}</span></div>'
+                            f'<div class="tabela">{corpo}</div></div>',
+                            unsafe_allow_html=True,
+                        )
                     st.markdown(
-                        html_legenda(
-                            [serie_principal, comparativa],
-                            nomes,
-                            f"Retorno anualizado em cada janela de {texto_janela(prazo_anos)}",
-                        ),
+                        html_rodape_lamina(f"Retornos brutos, até {ate_texto}."),
                         unsafe_allow_html=True,
                     )
-                    st.plotly_chart(
-                        criar_grafico_lamina_janelas(
-                            analise, [serie_principal, comparativa], nomes, acumulado=False
-                        ),
-                        width="stretch",
-                        config=CONFIG_GRAFICO_LAMINA,
-                        key=f"grafico_anual_{comparativa}",
-                    )
-                with coluna_painel:
-                    serie_p, serie_c = analise[serie_principal], analise[comparativa]
-                    res_p = resultados_periodo[serie_principal]
-                    res_c = resultados_periodo[comparativa]
-                    linhas_painel = [
-                        (rotulo_periodo, res_p["acumulado"], res_c["acumulado"]),
-                        ("Anualizado", res_p["anualizado"], res_c["anualizado"]),
-                        ("Pior janela", serie_p.min(), serie_c.min()),
-                        ("Mediana", serie_p.median(), serie_c.median()),
-                        ("Melhor janela", serie_p.max(), serie_c.max()),
-                    ]
-                    corpo = "".join(
-                        f'<div class="linha"><span class="rot">{escape(rotulo)}</span>'
-                        f'<span class="vp">{formatar_percentual(vp)}</span>'
-                        f'<span class="vc">{formatar_percentual(vc)}</span></div>'
-                        for rotulo, vp, vc in linhas_painel
-                    )
-                    st.markdown(
-                        f'<div class="lam-painel"><div class="cab">'
-                        f'<span></span><span style="color:#B4000A">{escape(nomes_curtos[serie_principal])}</span>'
-                        f'<span style="color:#9CA3AF">{escape(nomes_curtos[comparativa])}</span></div>'
-                        f'<div class="tabela">{corpo}</div></div>',
-                        unsafe_allow_html=True,
-                    )
-                st.markdown(
-                    html_rodape_lamina(f"Retornos brutos, até {ate_texto}."),
-                    unsafe_allow_html=True,
-                )
 
     # ---------------------------------------------- lâmina 2: acumulado
     with st.container(key="lamina_acumulada"):
@@ -5705,58 +5726,55 @@ try:
             ),
             unsafe_allow_html=True,
         )
-        coluna_grafico, coluna_painel = st.columns([2.05, 1], vertical_alignment="top")
-        with coluna_grafico:
-            st.markdown(html_legenda(series_escolhidas, nomes), unsafe_allow_html=True)
-            st.plotly_chart(
-                criar_grafico_lamina_janelas(analise, series_escolhidas, nomes, acumulado=True),
-                width="stretch",
-                config=CONFIG_GRAFICO_LAMINA,
-                key="grafico_acumulado",
-            )
-        with coluna_painel:
-            cards = []
-            for posicao, comparativa in enumerate(series_comparativas_finais[:3]):
-                vitorias = int(
-                    (analise[f"{serie_principal}_acumulado"] > analise[f"{comparativa}_acumulado"]).sum()
+        incluir_acumulada = chave_pdf("pdf_acumulada")
+        if incluir_acumulada:
+            coluna_grafico, coluna_painel = st.columns([2.05, 1], vertical_alignment="top")
+            with coluna_grafico:
+                st.markdown(html_legenda(series_escolhidas, nomes), unsafe_allow_html=True)
+                st.plotly_chart(
+                    criar_grafico_lamina_janelas(analise, series_escolhidas, nomes, acumulado=True),
+                    width="stretch",
+                    config=CONFIG_GRAFICO_LAMINA,
+                    key="grafico_acumulado",
                 )
-                legenda_card = (
-                    "janelas superaram " if posicao == 0 else "superaram "
-                ) + f"{com_artigo(comparativa, nomes[comparativa])} ({formatar_frequencia(vitorias, total_janelas)})"
-                cards.append(
-                    f'<div class="lam-card{" destaque" if posicao == 0 else ""}">'
-                    f"<b>{vitorias} de {total_janelas}</b><span>{escape(legenda_card)}</span></div>"
-                )
-            colunas_tabela = series_escolhidas[:4]
-            cabecalho = "".join(
-                f'<th style="color:{"#B4000A" if i == 0 else "#1F2329"}">{escape(nomes_curtos[c])}</th>'
-                for i, c in enumerate(colunas_tabela)
-            )
-            linhas_tabela = ""
-            for rotulo, funcao in [("Pior", "min"), ("Mediana", "median"), ("Melhor", "max")]:
-                celulas = "".join(
-                    f'<td style="color:{LAMINA_CORES_VALOR[i] if i != 1 else "#4B5563"}">'
-                    f"{formatar_percentual(getattr(analise[f'{c}_acumulado'], funcao)())}</td>"
+            with coluna_painel:
+                cards = []
+                for posicao, comparativa in enumerate(series_comparativas_finais[:3]):
+                    vitorias = int(
+                        (analise[f"{serie_principal}_acumulado"] > analise[f"{comparativa}_acumulado"]).sum()
+                    )
+                    legenda_card = (
+                        "janelas superaram " if posicao == 0 else "superaram "
+                    ) + f"{com_artigo(comparativa, nomes[comparativa])} ({formatar_frequencia(vitorias, total_janelas)})"
+                    cards.append(
+                        f'<div class="lam-card{" destaque" if posicao == 0 else ""}">'
+                        f"<b>{vitorias} de {total_janelas}</b><span>{escape(legenda_card)}</span></div>"
+                    )
+                colunas_tabela = series_escolhidas[:4]
+                cabecalho = "".join(
+                    f'<th style="color:{"#B4000A" if i == 0 else "#1F2329"}">{escape(nomes_curtos[c])}</th>'
                     for i, c in enumerate(colunas_tabela)
                 )
-                linhas_tabela += f"<tr><td>{rotulo}</td>{celulas}</tr>"
+                linhas_tabela = ""
+                for rotulo, funcao in [("Pior", "min"), ("Mediana", "median"), ("Melhor", "max")]:
+                    celulas = "".join(
+                        f'<td style="color:{LAMINA_CORES_VALOR[i] if i != 1 else "#4B5563"}">'
+                        f"{formatar_percentual(getattr(analise[f'{c}_acumulado'], funcao)())}</td>"
+                        for i, c in enumerate(colunas_tabela)
+                    )
+                    linhas_tabela += f"<tr><td>{rotulo}</td>{celulas}</tr>"
+                st.markdown(
+                    "".join(cards)
+                    + f'<div class="lam-mini"><table><tr><th>EM {texto_janela(prazo_anos).upper()}</th>'
+                    f"{cabecalho}</tr>{linhas_tabela}</table></div>",
+                    unsafe_allow_html=True,
+                )
             st.markdown(
-                "".join(cards)
-                + f'<div class="lam-mini"><table><tr><th>EM {texto_janela(prazo_anos).upper()}</th>'
-                f"{cabecalho}</tr>{linhas_tabela}</table></div>",
+                html_rodape_lamina(
+                    f"Fonte: Radar de Retorno, dados até {ate_texto}. {nota_sp}Retornos brutos e acumulados."
+                ),
                 unsafe_allow_html=True,
             )
-        nota_sp = (
-            "S&P 500 em USD, índice de preço. "
-            if any(c.startswith("sp500") for c in series_escolhidas)
-            else ""
-        )
-        st.markdown(
-            html_rodape_lamina(
-                f"Fonte: Radar de Retorno, dados até {ate_texto}. {nota_sp}Retornos brutos e acumulados."
-            ),
-            unsafe_allow_html=True,
-        )
 
     with st.expander("Tabela detalhada das janelas (com datas da pior e da melhor)"):
         visualizacao_tabelas = st.radio(
@@ -5793,6 +5811,8 @@ try:
     calendario = calcular_janelas_calendario(
         indices, series_escolhidas, prazo_anos, historico_anos
     )
+    incluir_calendario = False
+    incluir_tabela_calendario = False
     if len(calendario) >= 2:
         comparativa = series_comparativas_finais[0]
         with st.container(key="lamina_calendario"):
@@ -5818,38 +5838,45 @@ try:
                 ),
                 unsafe_allow_html=True,
             )
-            st.markdown(
-                html_legenda([serie_principal, comparativa], nomes, "Em verde, ganho sobre a comparada (p.p.)"),
-                unsafe_allow_html=True,
-            )
-            st.plotly_chart(
-                criar_grafico_lamina_calendario(calendario, serie_principal, comparativa, nomes),
-                width="stretch",
-                config=CONFIG_GRAFICO_LAMINA,
-                key="grafico_calendario",
-            )
-            with st.expander("Todas as janelas, lado a lado"):
-                tabela_calendario = []
-                for linha in calendario:
-                    registro = {"Período": linha["labelLong"]}
-                    if linha["components"]:
-                        registro["S&P 500"] = formatar_percentual(linha["components"]["sp500_componente"], 2)
-                        registro["IPCA"] = formatar_percentual(linha["components"]["ipca_componente"], 2)
-                    for codigo in series_escolhidas:
-                        registro[nomes_curtos[codigo]] = formatar_percentual(linha["values"][codigo], 2)
-                    diferenca = linha["values"][serie_principal] - linha["values"][comparativa]
-                    registro[f"Ganho s/ {nomes_curtos[comparativa]}"] = (
-                        f"{'+' if diferenca >= 0 else '−'}{abs(diferenca) * 100:.2f} p.p.".replace(".", ",")
-                    )
-                    tabela_calendario.append(registro)
-                st.dataframe(pd.DataFrame(tabela_calendario), hide_index=True, width="stretch")
-            st.markdown(
-                html_rodape_lamina(
-                    "Janelas de dezembro a dezembro (2011–15 = dez/2010 a dez/2015). "
-                    f"{nota_sp}Retornos brutos, sem impostos."
-                ),
-                unsafe_allow_html=True,
-            )
+            incluir_calendario = chave_pdf("pdf_calendario")
+            if incluir_calendario:
+                st.markdown(
+                    html_legenda([serie_principal, comparativa], nomes, "Em verde, ganho sobre a comparada (p.p.)"),
+                    unsafe_allow_html=True,
+                )
+                st.plotly_chart(
+                    criar_grafico_lamina_calendario(calendario, serie_principal, comparativa, nomes),
+                    width="stretch",
+                    config=CONFIG_GRAFICO_LAMINA,
+                    key="grafico_calendario",
+                )
+                incluir_tabela_calendario = st.toggle(
+                    "Incluir a tabela lado a lado no PDF",
+                    value=True,
+                    key="pdf_calendario_tabela",
+                )
+                with st.expander("Todas as janelas, lado a lado"):
+                    tabela_calendario = []
+                    for linha in calendario:
+                        registro = {"Período": linha["labelLong"]}
+                        if linha["components"]:
+                            registro["S&P 500"] = formatar_percentual(linha["components"]["sp500_componente"], 2)
+                            registro["IPCA"] = formatar_percentual(linha["components"]["ipca_componente"], 2)
+                        for codigo in series_escolhidas:
+                            registro[nomes_curtos[codigo]] = formatar_percentual(linha["values"][codigo], 2)
+                        diferenca = linha["values"][serie_principal] - linha["values"][comparativa]
+                        registro[f"Ganho s/ {nomes_curtos[comparativa]}"] = (
+                            f"{'+' if diferenca >= 0 else '−'}{abs(diferenca) * 100:.2f} p.p.".replace(".", ",")
+                        )
+                        tabela_calendario.append(registro)
+                    st.dataframe(pd.DataFrame(tabela_calendario), hide_index=True, width="stretch")
+                st.markdown(
+                    html_rodape_lamina(
+                        "Janelas de dezembro a dezembro (2011–15 = dez/2010 a dez/2015). "
+                        f"{nota_sp}Retornos brutos, sem impostos."
+                    ),
+                    unsafe_allow_html=True,
+                )
 
     # --------------------------------------------- lâmina 4: período
     with st.container(key="lamina_periodo"):
@@ -5868,41 +5895,43 @@ try:
             html_cabecalho_lamina(f"Desempenho no período · {rotulo_periodo}", titulo),
             unsafe_allow_html=True,
         )
-        coluna_grafico, coluna_painel = st.columns([2.05, 1], vertical_alignment="top")
-        with coluna_grafico:
+        incluir_periodo = chave_pdf("pdf_periodo")
+        if incluir_periodo:
+            coluna_grafico, coluna_painel = st.columns([2.05, 1], vertical_alignment="top")
+            with coluna_grafico:
+                st.markdown(
+                    html_legenda(series_escolhidas, nomes, "Base 100 no início do período"),
+                    unsafe_allow_html=True,
+                )
+                st.plotly_chart(
+                    criar_grafico_lamina_periodo(periodo, series_escolhidas, nomes),
+                    width="stretch",
+                    config=CONFIG_GRAFICO_LAMINA,
+                    key="grafico_periodo",
+                )
+            with coluna_painel:
+                corpo = "".join(
+                    f'<div class="linha"><span class="rot">'
+                    f'<span style="color:{LAMINA_CORES[i % len(LAMINA_CORES)]}">●</span> '
+                    f"{escape(nomes_curtos[c])}</span>"
+                    f'<span class="vp" style="color:{"#B4000A" if i == 0 else "#1F2329"}">'
+                    f'{formatar_percentual(resultados_periodo[c]["acumulado"])}</span>'
+                    f'<span class="vc">{formatar_percentual(resultados_periodo[c]["anualizado"])}</span></div>'
+                    for i, c in enumerate(series_escolhidas)
+                )
+                st.markdown(
+                    '<div class="lam-painel"><div class="cab"><span></span>'
+                    '<span style="color:#9CA3AF">Acumulado</span><span style="color:#9CA3AF">Ao ano</span></div>'
+                    f'<div class="tabela">{corpo}</div></div>',
+                    unsafe_allow_html=True,
+                )
             st.markdown(
-                html_legenda(series_escolhidas, nomes, "Base 100 no início do período"),
+                html_rodape_lamina(
+                    f"Período efetivo: {periodo['data'].min():%m/%Y} a {periodo['data'].max():%m/%Y} "
+                    f"({meses_efetivos} meses). Retornos brutos."
+                ),
                 unsafe_allow_html=True,
             )
-            st.plotly_chart(
-                criar_grafico_lamina_periodo(periodo, series_escolhidas, nomes),
-                width="stretch",
-                config=CONFIG_GRAFICO_LAMINA,
-                key="grafico_periodo",
-            )
-        with coluna_painel:
-            corpo = "".join(
-                f'<div class="linha"><span class="rot">'
-                f'<span style="color:{LAMINA_CORES[i % len(LAMINA_CORES)]}">●</span> '
-                f"{escape(nomes_curtos[c])}</span>"
-                f'<span class="vp" style="color:{"#B4000A" if i == 0 else "#1F2329"}">'
-                f'{formatar_percentual(resultados_periodo[c]["acumulado"])}</span>'
-                f'<span class="vc">{formatar_percentual(resultados_periodo[c]["anualizado"])}</span></div>'
-                for i, c in enumerate(series_escolhidas)
-            )
-            st.markdown(
-                '<div class="lam-painel"><div class="cab"><span></span>'
-                '<span style="color:#9CA3AF">Acumulado</span><span style="color:#9CA3AF">Ao ano</span></div>'
-                f'<div class="tabela">{corpo}</div></div>',
-                unsafe_allow_html=True,
-            )
-        st.markdown(
-            html_rodape_lamina(
-                f"Período efetivo: {periodo['data'].min():%m/%Y} a {periodo['data'].max():%m/%Y} "
-                f"({meses_efetivos} meses). Retornos brutos."
-            ),
-            unsafe_allow_html=True,
-        )
 
     # --------------------------------------------------------- PDF
     st.subheader("Lâminas em PDF para o cliente")
@@ -5917,6 +5946,22 @@ try:
         horizontal=True,
         key="marca_pdf_indices",
     )
+    incluir_premissas = st.toggle(
+        "Incluir a lâmina de premissas", value=True, key="pdf_premissas"
+    )
+    selecao_pdf = {
+        "annual": [c for c in series_comparativas_finais if lamina_anual_incluida.get(c, True)],
+        "accum": incluir_acumulada,
+        "calendar": incluir_calendario,
+        "calendarTable": incluir_calendario and incluir_tabela_calendario,
+        "period": incluir_periodo,
+        "assumptions": incluir_premissas,
+    }
+    total_laminas = (
+        len(selecao_pdf["annual"]) + selecao_pdf["accum"] + selecao_pdf["calendar"]
+        + selecao_pdf["calendarTable"] + selecao_pdf["period"] + selecao_pdf["assumptions"]
+    )
+    st.caption(f"{total_laminas} lâmina(s) selecionada(s). Lâminas recolhidas ficam fora do PDF.")
     dados_apresentacao = montar_dados_apresentacao(
         analise,
         periodo,
@@ -5929,6 +5974,7 @@ try:
         historico_anos,
         calendario,
         "santander" if marca_pdf == "Santander" else "radar",
+        selecao_pdf,
     )
     dados_json = json.dumps(dados_apresentacao, ensure_ascii=False, sort_keys=True)
 
@@ -5936,7 +5982,7 @@ try:
         st.session_state.pop("pdf_radar", None)
         st.session_state.pop("pdf_configuracao", None)
 
-    if st.button("Preparar PDF", type="primary"):
+    if st.button("Preparar PDF", type="primary", disabled=total_laminas == 0):
         with st.spinner("Montando as lâminas em PDF..."):
             st.session_state["pdf_radar"] = gerar_pdf(dados_json)
             st.session_state["pdf_configuracao"] = dados_json

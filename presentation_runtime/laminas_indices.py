@@ -670,12 +670,19 @@ def render(c, d):
     c.setPageSize(PAGE)
     c.setTitle(d.get("documentTitle", "Radar de Retorno"))
     L = Lamina(c, d)
+    inc = d.get("include") or {}
+    anuais = inc.get("annual")
     for i in range(1, len(d["series"])):
-        lamina_anualizada(L, d, i)
-    lamina_acumulada(L, d)
+        if anuais is None or d["series"][i]["code"] in anuais:
+            lamina_anualizada(L, d, i)
+    if inc.get("accum", True):
+        lamina_acumulada(L, d)
     if d.get("calendar") and len(d["calendar"]["rows"]) >= 2:
-        lamina_calendario_barras(L, d)
-        lamina_calendario_tabela(L, d)
-    if d.get("periodChart"):
+        if inc.get("calendar", True):
+            lamina_calendario_barras(L, d)
+        if inc.get("calendarTable", True):
+            lamina_calendario_tabela(L, d)
+    if d.get("periodChart") and inc.get("period", True):
         lamina_periodo(L, d)
-    lamina_premissas(L, d)
+    if inc.get("assumptions", True):
+        lamina_premissas(L, d)
