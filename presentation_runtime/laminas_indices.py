@@ -242,9 +242,10 @@ class Lamina:
         if zero_base:
             vmin = min(0, vmin)
         folga = (vmax - vmin) * 0.06 or 0.01
-        inferior = vmin - folga * 0.5
+        # folga abaixo da menor série (linha constante não cola no eixo)
+        inferior = vmin - max((vmax - vmin) * 0.15, 0.01 if sufixo else 1)
         if zero_base and vmin >= 0:
-            inferior = 0
+            inferior = max(0, inferior)
         if inferior_exato:
             inferior = vmin
         ticks = ticks_bonitos(inferior, vmax + folga, 5)

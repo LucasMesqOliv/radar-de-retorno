@@ -4897,8 +4897,15 @@ def criar_grafico_lamina_janelas(
         )
     _adicionar_linhas(fig, analise["data_final"], series)
     _layout_lamina(fig, altura)
-    if acumulado:
-        fig.update_yaxes(rangemode="tozero")
+    valores = pd.concat([serie for _, serie, _, _, _ in series])
+    minimo, maximo = float(valores.min()), float(valores.max())
+    amplitude = max(maximo - minimo, 1.0)
+    # Folga abaixo da menor série: uma linha constante (ex.: prefixado) não
+    # pode ficar colada no eixo.
+    inferior = minimo - max(0.15 * amplitude, 1.0)
+    if acumulado and minimo >= 0:
+        inferior = max(0.0, inferior) if minimo > 0.15 * amplitude else 0.0
+    fig.update_yaxes(range=[inferior, maximo + 0.08 * amplitude])
     return fig
 
 
